@@ -205,3 +205,12 @@ cython_debug/
 marimo/_static/
 marimo/_lsp/
 __marimo__/
+
+# Agent framework — proprietary workflow (stays local)
+.claude/
+CLAUDE.md
+AGENTS_USAGE.md
+PLAN.md
+STATE.md
+CORRECTIONS.md
+REPORTS/
