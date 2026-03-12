@@ -53,6 +53,58 @@ The Cerema dictionary documents **DV3F** (enriched version). DVF+ open-data is a
 
 ---
 
+## 1b. Secondary Source — Administrative Boundaries (GeoJSON)
+
+| Attribute | Value | Confidence |
+|-----------|-------|------------|
+| Source name | Contours administratifs (communes + départements) | ✅ |
+| Publisher | Etalab / IGN (via data.gouv.fr) | ✅ |
+| Content | Polygon boundaries for all ~35,000 communes and 101 departments in France (metro + DOM) | ✅ |
+| Format | GeoJSON (multiple generalization levels) | ✅ |
+| Download URL (communes) | https://etalab-datasets.geo.data.gouv.fr/contours-administratifs/2023/geojson/ | ✅ |
+| Alternative (GitHub) | https://github.com/gregoiredavid/france-geojson | ✅ |
+| Recommended file | `communes-1000m.geojson` (~10 MB, 1km generalization — fast + good enough for dashboard) | ⚠️ |
+| Department file | `departements-1000m.geojson` (~340 KB) | ✅ |
+| DOM simplified version | https://www.data.gouv.fr/datasets/contours-des-communes-de-france-simplifie-avec-regions-et-departement-doutre-mer-rapproches | ✅ |
+| License | Licence Ouverte v2.0 (IGN Admin Express) | ✅ |
+| Update frequency | Annual (follows IGN Admin Express updates) | ✅ |
+| Projection | WGS84 (EPSG:4326) — standard for web mapping | ✅ |
+
+### Available Generalization Levels
+
+| File | Size | Precision | Best For |
+|------|------|-----------|----------|
+| `communes-5m.geojson` | ~292 MB | 5m | High-precision GIS analysis |
+| `communes-50m.geojson` | ~60 MB | 50m | Detailed web maps |
+| `communes-100m.geojson` | ~33 MB | 100m | Interactive dashboards |
+| `communes-1000m.geojson` | ~10 MB | 1km | **Our choice** — Looker Studio / quick loading |
+| `departements-1000m.geojson` | ~340 KB | 1km | Department-level choropleth |
+
+### Join Key with DVF+
+
+| DVF+ Column | GeoJSON Property | Join Type | Notes |
+|------------|------------------|-----------|-------|
+| `mutation.coddep` | `properties.code` (departements) | Exact match on department code | For department-level dashboard tiles |
+| `disposition_parcelle.codcomm` | `properties.code` (communes) | Exact match on INSEE code | For commune-level analysis |
+| `mutation.l_codinsee[0]` | `properties.code` (communes) | First element of array → exact match | Alternative join from mutation table |
+
+### Usage in Pipeline
+
+- **Ingestion**: download GeoJSON file → upload to GCS as-is (no transformation needed)
+- **BigQuery**: load as JSON or use BigQuery GIS functions (`ST_GEOGFROMGEOJSON`)
+- **Looker Studio**: use as geographic layer for choropleth maps (price/m² by department, transaction volume by commune)
+- **dbt**: optionally create `dim_geography` table from GeoJSON properties (code, name, department, region)
+
+### Why This Source Matters (DE Skill)
+
+Integrating a second source with a different format (GeoJSON vs SQL dump) demonstrates:
+- Multi-format ingestion capability
+- Geographic data handling
+- Join strategy across heterogeneous sources
+- Dashboard visualization enrichment from cross-referenced data
+
+---
+
 ## 2. Entity Relationship Diagram
 
 ```mermaid
@@ -69,6 +121,8 @@ erDiagram
     local ||--o{ adresse_local : "iddispoloc"
     adresse_dispoparc }o--|| adresse : "idadr"
     adresse_local }o--|| adresse : "idadr"
+    geojson_departements }o--o{ mutation : "code = coddep"
+    geojson_communes }o--o{ disposition_parcelle : "code = codcomm"
 
     mutation {
         int idmutation PK
@@ -457,6 +511,11 @@ local ─────────────────────→ stg_dvf
 disposition_parcelle ──────→ stg_dvf__parcelles ─────────┘                                    dim_communes
 parcelle ──────────────────→ (joined in intermediate)                                         dim_property_types
 adresse ───────────────────→ (joined in intermediate)                                         dim_dates
+                                                                                              dim_geography
+SOURCE (GeoJSON download)
+─────────────────────────
+departements.geojson ─────→ stg_geo__departements ───────────────────────────────────────────→ dim_geography
+communes.geojson ─────────→ stg_geo__communes ───────────────────────────────────────────────→ dim_geography
 
 ann_nature_mutation ───────→ dbt seed (reference)
 ann_type_local ────────────→ dbt seed (reference)
@@ -525,6 +584,25 @@ ann_nature_culture ────────→ dbt seed (reference)
 | `day_of_week` | INTEGER | COMPUTED | EXTRACT(DAYOFWEEK) |
 | `is_weekend` | BOOLEAN | COMPUTED | DAYOFWEEK IN (1, 7) |
 
+### `dim_geography` — Dimension Table (from GeoJSON secondary source)
+
+| Column | Type | Source | Business Rule |
+|--------|------|--------|---------------|
+| `geo_code` | STRING | geojson `properties.code` | PK — INSEE code for communes, department code for departments |
+| `geo_name` | STRING | geojson `properties.nom` | Commune or department name |
+| `geo_level` | STRING | COMPUTED | "commune" or "department" |
+| `department_code` | STRING | geojson `properties.code` (dept) or first 2-3 chars of commune code | For grouping communes by department |
+| `department_name` | STRING | departements.geojson `properties.nom` | Department name |
+| `region_code` | STRING | geojson `properties.codeRegion` | ⚠️ May or may not be present — verify |
+| `region_name` | STRING | geojson `properties.nomRegion` | ⚠️ May or may not be present — verify |
+| `geometry` | GEOGRAPHY | geojson `geometry` | BigQuery GEOGRAPHY type (for GIS functions) |
+| `centroid_lat` | FLOAT | COMPUTED | ST_Y(ST_CENTROID(geometry)) |
+| `centroid_lon` | FLOAT | COMPUTED | ST_X(ST_CENTROID(geometry)) |
+
+**Grain**: One row per geographic entity (commune or department)
+**Source**: GeoJSON files (Etalab/IGN)
+**Join to fct_transactions**: `dim_geography.geo_code = fct_transactions.department_code` (department level) or `dim_geography.geo_code = fct_transactions.commune_code` (commune level)
+
 ---
 
 ## 7. Data Quality Rules
@@ -544,6 +622,9 @@ ann_nature_culture ────────→ dbt seed (reference)
 | Department code | mutation | coddep | accepted_values | Valid FR dept codes | ⚠️ |
 | Property type | mutation | codtypbien | not_null | For analysis subset | ⚠️ |
 | Geometry validity | mutation | geomlocmut | custom | Check null rate | ❓ |
+| GeoJSON dept coverage | geojson_departements | code | completeness | All 101 FR departments present | ⚠️ |
+| GeoJSON commune coverage | geojson_communes | code | completeness | All communes from DVF+ have a match | ⚠️ |
+| Join integrity | dim_geography | geo_code ↔ fct_transactions.department_code | relationship | 0 unmatched departments | ⚠️ |
 
 ---
 
@@ -610,6 +691,16 @@ After restoring the SQL dump, the data-analyst agent must verify:
 - [ ] PostGIS geometry: test `ST_X()`, `ST_Y()` extraction
 - [ ] Encoding: confirm UTF-8 throughout
 - [ ] Total dump size on disk after restore
+
+**GeoJSON secondary source:**
+- [ ] Download `departements-1000m.geojson` — confirm all 101 departments present
+- [ ] Download `communes-1000m.geojson` — confirm file loads correctly
+- [ ] Verify `properties.code` field matches DVF+ `coddep` format (string, 2-3 chars)
+- [ ] Verify `properties.code` for communes matches DVF+ `codcomm` format (string, 5 chars)
+- [ ] Verify DOM departments are included (971, 972, 973, 974, 976)
+- [ ] Test join: all unique `coddep` from DVF+ have a match in GeoJSON departments
+- [ ] Verify `properties.nom` field contains readable names (not codes)
+- [ ] Check if `properties.codeRegion` and `properties.nomRegion` are available
 
 ---
 
