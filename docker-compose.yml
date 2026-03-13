@@ -1,0 +1,60 @@
+services:
+  # ---------------------------------------------------------------------------
+  # DVF PostgreSQL -- ephemeral (no persistent volume)
+  # Used only during ingestion: restore SQL dump, export to CSV, then destroyed.
+  # ---------------------------------------------------------------------------
+  postgres:
+    build:
+      context: ./docker/postgres
+      dockerfile: Dockerfile
+    environment:
+      POSTGRES_USER: ${POSTGRES_USER:-dvf}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-dvf_local_only}
+      POSTGRES_DB: ${POSTGRES_DB:-dvf}
+    ports:
+      - "${POSTGRES_PORT:-5432}:5432"
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER:-dvf} -d ${POSTGRES_DB:-dvf}"]
+      interval: 5s
+      timeout: 5s
+      retries: 5
+
+  # ---------------------------------------------------------------------------
+  # Kestra internal PostgreSQL -- persistent (metadata store for Kestra)
+  # ---------------------------------------------------------------------------
+  kestra-postgres:
+    image: postgres:16
+    environment:
+      POSTGRES_USER: kestra
+      POSTGRES_PASSWORD: kestra_local_only
+      POSTGRES_DB: kestra
+    volumes:
+      - kestra_pg_data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U kestra -d kestra"]
+      interval: 5s
+      timeout: 5s
+      retries: 5
+
+  # ---------------------------------------------------------------------------
+  # Kestra orchestrator -- DAG-based pipeline execution
+  # ---------------------------------------------------------------------------
+  kestra:
+    image: kestra/kestra:latest
+    ports:
+      - "${KESTRA_PORT:-8080}:8080"
+    environment:
+      KESTRA_CONFIGURATION: |
+        datasources:
+          postgres:
+            url: jdbc:postgresql://kestra-postgres:5432/kestra
+            driverClassName: org.postgresql.Driver
+            username: kestra
+            password: kestra_local_only
+    command: server standalone
+    depends_on:
+      kestra-postgres:
+        condition: service_healthy
+
+volumes:
+  kestra_pg_data:
