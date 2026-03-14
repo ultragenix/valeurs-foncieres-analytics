@@ -1,5 +1,6 @@
 .PHONY: help setup terraform-init terraform-plan terraform-apply terraform-destroy \
-       docker-up docker-down docker-up-kestra run dbt-run test clean
+       docker-up docker-down docker-up-kestra ingest-download ingest-restore \
+       run dbt-run test clean
 
 help: ## Show this help message
 	@grep -E '^[a-zA-Z_-]+:.*?## .*$$' $(MAKEFILE_LIST) | \
@@ -30,6 +31,12 @@ docker-down: ## Stop and remove all containers
 
 docker-up-kestra: ## Start Kestra orchestrator (+ its internal PostgreSQL)
 	docker compose up -d kestra
+
+ingest-download: ## Download DVF+ SQL dump from Cerema
+	uv run python -m ingestion.download_dvf
+
+ingest-restore: ## Restore DVF+ SQL dump into PostgreSQL container
+	uv run python -m ingestion.restore_dump
 
 run: ## Run full pipeline (placeholder -- filled in later parts)
 	@echo "Pipeline not yet implemented. See PLAN.md for progress."
