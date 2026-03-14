@@ -180,124 +180,105 @@ You will also need:
 
 ## Quick Start
 
-### 1. Clone and configure
+> **TL;DR for reviewers**: 5 commands, ~15 minutes, no GCP experience needed.
+
+### 1. Clone, configure, and install
 
 ```bash
 git clone <this-repository-url>
 cd valeurs-foncieres-analytics
-cp .env.example .env
+make setup                    # creates .env from template, installs Python deps, inits Terraform
 ```
 
-Edit `.env` with your GCP project details:
+### 2. Set up GCP credentials
+
+Edit `.env` — you only need to change **2 values**:
 
 ```bash
-# Required: set your GCP project ID and bucket name
-GCP_PROJECT_ID=your-gcp-project-id
+GCP_PROJECT_ID=your-gcp-project-id          # find at console.cloud.google.com
 GCS_BUCKET_NAME=your-project-id-dvf-data-lake
-GOOGLE_APPLICATION_CREDENTIALS=./gcp-sa-key.json
-
-# Demo mode: choose which department(s) to load (default: 75,13)
-# Use the department code matching your downloaded region (e.g. 974 for La Reunion)
-DVF_DEMO_DEPARTMENTS=75,13
 ```
 
-### 2. Create a GCP service account
-
-1. Go to [console.cloud.google.com](https://console.cloud.google.com/) and create a project (or use an existing one)
-2. Enable the required APIs: **BigQuery API** and **Cloud Storage API**
-3. Go to **IAM & Admin > Service Accounts** and create a new service account
-4. Grant the following roles:
-   - `Storage Object Admin` (for GCS bucket read/write)
-   - `BigQuery Data Editor` (for creating tables and loading data)
-   - `BigQuery Job User` (for running queries)
-5. Create a JSON key for the service account and save it as `./gcp-sa-key.json` in the project root
+Then place your GCP service account key at the project root:
 
 ```bash
-# The file should be at the project root (it is gitignored)
 cp ~/Downloads/your-service-account-key.json ./gcp-sa-key.json
 ```
 
-### 3. Install dependencies and initialize Terraform
+<details>
+<summary>How to create a GCP service account (click to expand)</summary>
+
+1. Go to [console.cloud.google.com](https://console.cloud.google.com/) and create a project (or use an existing one)
+2. Enable **BigQuery API** and **Cloud Storage API** (search in the API Library)
+3. Go to **IAM & Admin > Service Accounts** > **Create Service Account**
+4. Grant these roles: `Storage Object Admin`, `BigQuery Data Editor`, `BigQuery Job User`
+5. Click **Keys** > **Add Key** > **Create new key** > **JSON**
+6. Save the downloaded file as `./gcp-sa-key.json`
+
+</details>
+
+### 3. Provision GCP infrastructure
 
 ```bash
-make setup
+make terraform-apply          # creates GCS bucket + 3 BigQuery datasets (~30 seconds)
 ```
 
-This runs three steps: copies `.env.example` to `.env` (if not already done), installs Python dependencies with `uv pip install -r requirements.txt`, and runs `terraform init` in the `terraform/` directory.
+### 4. Download the DVF+ data
 
-### 4. Provision GCP infrastructure
+Download the DVF+ SQL dump from Cerema Box (manual step — no account needed):
 
-```bash
-make terraform-apply
-```
+| Region | Link | Size | Duration |
+|--------|------|------|----------|
+| **La Reunion (recommended)** | [Download .7z](https://cerema.app.box.com/v/dvfplus-opendata/folder/347155412504) | 38 MB | ~5 min pipeline |
+| Ile-de-France | [Browse](https://cerema.app.box.com/v/dvfplus-opendata) | 700 MB | ~15 min pipeline |
+| National (11 files) | [Browse](https://cerema.app.box.com/v/dvfplus-opendata) | 4-5 GB | ~1-2h pipeline |
 
-This creates:
-- A GCS bucket for the raw data lake
-- Three BigQuery datasets (`dvf_raw`, `dvf_staging`, `dvf_analytics`)
-- A service account with Storage Object Admin and BigQuery Data Editor/Job User roles
-
-### 5. Download the DVF+ data (manual step)
-
-The DVF+ SQL dump is hosted on Cerema Box and requires a manual download:
-
-1. Download the `.7z` archive for your target region:
-
-| Region | Direct link | File size | Department codes | Use case |
-|--------|------------|-----------|-----------------|----------|
-| `R04_La_Reunion` | [Download](https://cerema.app.box.com/v/dvfplus-opendata/folder/347155412504) | ~38 MB | `974` | Fastest demo (~5 min) |
-| `R11_Ile_de_France` | [Browse](https://cerema.app.box.com/v/dvfplus-opendata) | ~700 MB | `75,77,78,91,92,93,94,95` | Paris region |
-| `National` (11 files) | [Browse](https://cerema.app.box.com/v/dvfplus-opendata) | ~4-5 GB | All | Full France production |
-
-> For other regions, browse [cerema.app.box.com/v/dvfplus-opendata](https://cerema.app.box.com/v/dvfplus-opendata) and navigate to the latest folder.
-
-4. Place the downloaded `.7z` file(s) in the `data/` directory:
+> **Recommended for review**: download La Reunion (~38 MB). The `.env` is pre-configured for it (`DVF_DEMO_DEPARTMENTS=974`).
 
 ```bash
 mkdir -p data
 cp ~/Downloads/DVFPlus_*.7z* data/
 ```
 
-5. Update `DVF_DEMO_DEPARTMENTS` in `.env` to match your downloaded region:
+<details>
+<summary>Using a different region? (click to expand)</summary>
+
+Update `DVF_DEMO_DEPARTMENTS` in `.env` to match your download:
 
 ```bash
-# For La Reunion:
-DVF_DEMO_DEPARTMENTS=974
-
-# For Ile-de-France (Paris only):
-DVF_DEMO_DEPARTMENTS=75
-
-# For full France (no filtering):
-DVF_MODE=full
+DVF_DEMO_DEPARTMENTS=75          # Paris (from R11_Ile_de_France)
+DVF_DEMO_DEPARTMENTS=75,77,78   # Multiple departments
+DVF_MODE=full                    # All of France (National download required)
 ```
 
-> **Note**: The automatic download (`make ingest-download`) attempts to fetch the dump via HTTP but may fail if the Cerema URL has changed. The manual download is the reliable method.
+Browse all regions at [cerema.app.box.com/v/dvfplus-opendata](https://cerema.app.box.com/v/dvfplus-opendata).
 
-### 6. Run the full pipeline
+</details>
+
+### 5. Run the pipeline
 
 ```bash
-make run
+make run                      # downloads, restores, exports, uploads, transforms — all automatic
 ```
 
-This single command executes the entire pipeline sequentially: extracts and restores the DVF+ SQL dump, starts an ephemeral PostgreSQL container, exports the data to CSV, downloads GeoJSON administrative boundaries, uploads everything to GCS, loads into BigQuery, runs all dbt transformations and tests, then shuts down PostgreSQL.
+This single command runs the entire pipeline: extracts the `.7z` archive, restores the SQL dump into an ephemeral PostgreSQL container, exports tables to CSV, downloads GeoJSON boundaries, uploads to GCS, loads into BigQuery, runs dbt transformations and 62 data tests, then shuts down PostgreSQL.
 
-For Kestra-based orchestration (optional), start Kestra with `make docker-up-kestra`, deploy the flow with `make kestra-deploy`, and trigger via `make pipeline`.
+| Mode | What it does | Duration |
+|------|-------------|----------|
+| `demo` (default) | Loads configured departments only | ~5-15 min |
+| `full` | Loads all of France (~20M transactions) | ~1-2 hours |
 
-**Pipeline modes** (set `DVF_MODE` in `.env`):
+### 6. View the dashboard
 
-| Mode | Scope | Duration | Use Case |
-|------|-------|----------|----------|
-| `demo` (default) | Configured departments only | ~5-15 minutes | Peer review -- proves pipeline works end-to-end |
-| `full` | All of France (~20M transactions) | ~1-2 hours | Production dashboard with complete dataset |
+**[Open the dashboard](https://lookerstudio.google.com/reporting/b0b00d24-9d2f-4164-86f2-79e72340f4ac)** (Looker Studio — no install needed)
 
-For detailed step descriptions, dependencies, and error handling, see [docs/PIPELINE.md](docs/PIPELINE.md).
+The dashboard has 4 tiles across 2 pages with 2 interactive filters (year, property type). It connects directly to BigQuery. Reviewers can view it without running the pipeline.
 
-### 7. View the dashboard
+To verify dashboard data matches BigQuery:
 
-**Dashboard URL**: [https://lookerstudio.google.com/reporting/b0b00d24-9d2f-4164-86f2-79e72340f4ac](https://lookerstudio.google.com/reporting/b0b00d24-9d2f-4164-86f2-79e72340f4ac)
-
-The Looker Studio dashboard connects directly to the `dvf_analytics` BigQuery dataset. It includes 4 tiles across 2 pages (transaction count, total value, average price evolution, transaction volume) and 2 interactive filters (year, property type). Setup instructions are in [docs/DASHBOARD.md](docs/DASHBOARD.md).
-
-Reviewers can access the dashboard via the link above without running the pipeline.
+```bash
+make dashboard-validate
+```
 
 To validate that the dashboard tiles return correct data:
 
