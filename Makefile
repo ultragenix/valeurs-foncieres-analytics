@@ -3,7 +3,7 @@
        ingest-export ingest-geojson ingest-upload bq-load \
        dbt-deps dbt-run dbt-test dbt-build \
        dashboard-validate \
-       run test clean
+       run pipeline pipeline-local kestra-deploy test clean
 
 help: ## Show this help message
 	@grep -E '^[a-zA-Z_-]+:.*?## .*$$' $(MAKEFILE_LIST) | \
@@ -53,8 +53,38 @@ ingest-upload: ## Upload CSV + GeoJSON to GCS
 bq-load: ## Load CSV + GeoJSON from GCS into BigQuery raw tables
 	uv run python -m ingestion.load_to_bigquery
 
-run: ## Run full pipeline (placeholder -- filled in later parts)
-	@echo "Pipeline not yet implemented. See PLAN.md for progress."
+run: pipeline-local ## Run full pipeline (sequential, no Kestra)
+
+pipeline: ## Run pipeline via Kestra API (requires Kestra running)
+	@echo "Triggering DVF pipeline via Kestra API..."
+	curl -s -X POST http://localhost:$${KESTRA_PORT:-8080}/api/v1/executions/dvf/dvf-pipeline \
+		-H "Content-Type: multipart/form-data" \
+		-F "mode=$${DVF_MODE:-demo}"
+	@echo ""
+	@echo "Pipeline triggered. Monitor at http://localhost:$${KESTRA_PORT:-8080}"
+
+pipeline-local: ## Run full pipeline locally (sequential, no Kestra required)
+	@echo "=== DVF Pipeline (local sequential mode) ==="
+	$(MAKE) ingest-download
+	$(MAKE) docker-up
+	@echo "Waiting for PostgreSQL to be ready..."
+	@sleep 5
+	$(MAKE) ingest-restore
+	$(MAKE) ingest-export
+	$(MAKE) ingest-geojson
+	$(MAKE) docker-down
+	$(MAKE) ingest-upload
+	$(MAKE) bq-load
+	$(MAKE) dbt-build
+	@echo "=== Pipeline complete ==="
+
+kestra-deploy: ## Deploy flow YAML to Kestra via API
+	@echo "Deploying DVF pipeline flow to Kestra..."
+	curl -s -X PUT http://localhost:$${KESTRA_PORT:-8080}/api/v1/flows \
+		-H "Content-Type: application/x-yaml" \
+		-d @kestra/flows/dvf_pipeline.yml
+	@echo ""
+	@echo "Flow deployed. View at http://localhost:$${KESTRA_PORT:-8080}"
 
 dbt-deps: ## Install dbt packages (dbt_utils)
 	cd dbt_dvf && uv run dbt deps

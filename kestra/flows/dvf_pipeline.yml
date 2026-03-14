@@ -1,0 +1,108 @@
+id: dvf-pipeline
+namespace: dvf
+description: >
+  End-to-end DVF data pipeline. Downloads the DVF+ SQL dump from Cerema,
+  restores it into an ephemeral PostgreSQL container, exports tables to CSV,
+  downloads GeoJSON admin boundaries, uploads everything to GCS, loads into
+  BigQuery raw tables, and runs dbt transformations (staging, intermediate,
+  marts).
+
+inputs:
+  - id: mode
+    type: ENUM
+    defaults: demo
+    values:
+      - demo
+      - full
+    description: >
+      Pipeline mode. "demo" processes 1-2 departments (~10 min),
+      "full" processes all of France (~2 hours).
+
+taskDefaults:
+  - type: io.kestra.plugin.scripts.shell.Commands
+    values:
+      env:
+        DVF_MODE: "{{ inputs.mode }}"
+        GCP_PROJECT_ID: "{{ envs.GCP_PROJECT_ID }}"
+        GCP_REGION: "{{ envs.GCP_REGION }}"
+        GCS_BUCKET_NAME: "{{ envs.GCS_BUCKET_NAME }}"
+        GOOGLE_APPLICATION_CREDENTIALS: "{{ envs.GOOGLE_APPLICATION_CREDENTIALS }}"
+        BQ_DATASET_RAW: "{{ envs.BQ_DATASET_RAW }}"
+        BQ_DATASET_STAGING: "{{ envs.BQ_DATASET_STAGING }}"
+        BQ_DATASET_ANALYTICS: "{{ envs.BQ_DATASET_ANALYTICS }}"
+        POSTGRES_USER: "{{ envs.POSTGRES_USER }}"
+        POSTGRES_PASSWORD: "{{ envs.POSTGRES_PASSWORD }}"
+        POSTGRES_DB: "{{ envs.POSTGRES_DB }}"
+        POSTGRES_HOST: "{{ envs.POSTGRES_HOST }}"
+        POSTGRES_PORT: "{{ envs.POSTGRES_PORT }}"
+        DVF_DEMO_DEPARTMENTS: "{{ envs.DVF_DEMO_DEPARTMENTS }}"
+        DBT_PROFILES_DIR: "{{ envs.DBT_PROFILES_DIR }}"
+
+tasks:
+  - id: download
+    type: io.kestra.plugin.scripts.shell.Commands
+    description: Download DVF+ SQL dump from Cerema
+    retry:
+      type: constant
+      maxAttempt: 3
+      interval: PT30S
+    commands:
+      - uv run python -m ingestion.download_dvf
+
+  - id: start_postgres
+    type: io.kestra.plugin.scripts.shell.Commands
+    description: Start ephemeral PostgreSQL container and wait for healthy
+    commands:
+      - docker compose up -d postgres
+      - sleep 5
+      - docker compose exec postgres pg_isready -U ${POSTGRES_USER:-dvf} -d ${POSTGRES_DB:-dvf}
+
+  - id: restore
+    type: io.kestra.plugin.scripts.shell.Commands
+    description: Restore DVF+ SQL dump into PostgreSQL container
+    retry:
+      type: constant
+      maxAttempt: 3
+      interval: PT30S
+    commands:
+      - uv run python -m ingestion.restore_dump
+
+  - id: export_and_geojson
+    type: io.kestra.plugin.core.flow.Parallel
+    description: Export PostgreSQL tables to CSV and download GeoJSON boundaries (parallel)
+    tasks:
+      - id: export_tables
+        type: io.kestra.plugin.scripts.shell.Commands
+        description: Export PostgreSQL tables to CSV files
+        commands:
+          - uv run python -m ingestion.export_tables
+
+      - id: download_geojson
+        type: io.kestra.plugin.scripts.shell.Commands
+        description: Download admin boundary GeoJSON files from Etalab
+        commands:
+          - uv run python -m ingestion.download_geojson
+
+  - id: stop_postgres
+    type: io.kestra.plugin.scripts.shell.Commands
+    description: Stop and remove ephemeral PostgreSQL container (cleanup)
+    commands:
+      - docker compose down postgres
+
+  - id: upload
+    type: io.kestra.plugin.scripts.shell.Commands
+    description: Upload CSV and GeoJSON files to GCS data lake
+    commands:
+      - uv run python -m ingestion.upload_to_gcs
+
+  - id: load_bigquery
+    type: io.kestra.plugin.scripts.shell.Commands
+    description: Load CSV and GeoJSON from GCS into BigQuery raw tables
+    commands:
+      - uv run python -m ingestion.load_to_bigquery
+
+  - id: dbt_transform
+    type: io.kestra.plugin.scripts.shell.Commands
+    description: Run dbt transformations (staging, intermediate, marts) and tests
+    commands:
+      - cd dbt_dvf && uv run dbt deps && uv run dbt run && uv run dbt test
