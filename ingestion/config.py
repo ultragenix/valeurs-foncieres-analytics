@@ -76,6 +76,12 @@ DATA_DIR: Path = PROJECT_ROOT / "data"
 DATA_EXPORT_DIR: Path = DATA_DIR / "export"
 DATA_GEOJSON_DIR: Path = DATA_DIR / "geojson"
 
+# ---------------------------------------------------------------------------
+# Chunked ingestion settings (full mode)
+# ---------------------------------------------------------------------------
+DVF_CHUNK_SIZE: int = int(os.getenv("DVF_CHUNK_SIZE", "10"))
+DVF_PROGRESS_FILE: Path = DATA_DIR / "chunked_progress.json"
+
 
 # ---------------------------------------------------------------------------
 # DVF table metadata

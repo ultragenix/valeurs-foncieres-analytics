@@ -11,6 +11,10 @@ services:
       POSTGRES_USER: ${POSTGRES_USER:-dvf}
       POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-dvf_local_only}
       POSTGRES_DB: ${POSTGRES_DB:-dvf}
+    shm_size: 2g
+    volumes:
+      - ./docker/postgres/postgresql.conf:/etc/postgresql/postgresql.conf:ro
+    command: postgres -c config_file=/etc/postgresql/postgresql.conf
     ports:
       - "127.0.0.1:${POSTGRES_PORT:-5432}:5432"
     healthcheck:

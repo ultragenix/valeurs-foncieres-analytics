@@ -32,7 +32,6 @@ logger = logging.getLogger(__name__)
 SIMPLE_TABLES: list[str] = [
     "disposition",
     "local",
-    "disposition_parcelle",
     "adresse",
     "ann_nature_mutation",
     "ann_type_local",
@@ -41,8 +40,9 @@ SIMPLE_TABLES: list[str] = [
     "ann_nature_culture_speciale",
 ]
 
-# Geometry columns to exclude from parcelle export.
+# Geometry columns to exclude from parcelle and disposition_parcelle exports.
 PARCELLE_EXCLUDE_COLUMNS: list[str] = ["geompar", "geomparmut"]
+DISPOSITION_PARCELLE_EXCLUDE_COLUMNS: list[str] = ["geomloc", "geompar"]
 
 # Regex pattern for valid French department codes (e.g., "01", "75", "2A", "974").
 DEPARTMENT_CODE_PATTERN: re.Pattern[str] = re.compile(r"^[0-9]{2,3}[A-B]?$")
@@ -51,6 +51,7 @@ DEPARTMENT_CODE_PATTERN: re.Pattern[str] = re.compile(r"^[0-9]{2,3}[A-B]?$")
 ALL_EXPORT_TABLES: list[str] = [
     "mutation",
     "parcelle",
+    "disposition_parcelle",
     *SIMPLE_TABLES,
 ]
 
@@ -58,7 +59,7 @@ ALL_EXPORT_TABLES: list[str] = [
 # ---------------------------------------------------------------------------
 # Column introspection
 # ---------------------------------------------------------------------------
-DVF_SCHEMAS: list[str] = ["public", "dvf", "dvf_annexe"]
+DVF_SCHEMAS: list[str] = ["public", "dvf", "dvf_annexe", "dvf_plus_annexe"]
 
 
 def _set_search_path(conn: psycopg2.extensions.connection) -> None:
@@ -99,9 +100,7 @@ def _validate_department_codes(departments: list[str]) -> None:
             raise ValueError(msg)
 
 
-def _build_where_clause(
-    table_name: str, departments: list[str] | None
-) -> str:
+def _build_where_clause(table_name: str, departments: list[str] | None) -> str:
     """Build a WHERE clause filtering by department codes, or empty string.
 
     Validates department codes against a strict regex before embedding
@@ -183,6 +182,18 @@ def _build_parcelle_query(
     return f"SELECT {cols_sql} FROM parcelle{where}"
 
 
+def _build_disposition_parcelle_query(
+    conn: psycopg2.extensions.connection,
+    departments: list[str] | None,
+) -> str:
+    """Build a SELECT for disposition_parcelle, excluding geometry columns."""
+    all_cols = _get_table_columns(conn, "disposition_parcelle")
+    keep = [c for c in all_cols if c not in DISPOSITION_PARCELLE_EXCLUDE_COLUMNS]
+    cols_sql = ", ".join(keep)
+    where = _build_where_clause("disposition_parcelle", departments)
+    return f"SELECT {cols_sql} FROM disposition_parcelle{where}"
+
+
 def _build_simple_query(
     table_name: str,
     departments: list[str] | None,
@@ -228,6 +239,7 @@ def _count_csv_rows(csv_path: Path) -> int:
     Handles multiline quoted fields correctly by counting actual CSV
     records rather than raw lines. Subtracts 1 for the header row.
     """
+    csv.field_size_limit(10_000_000)  # 10 MB for large geometry WKT fields
     with open(csv_path, "r", encoding="utf-8") as fh:
         reader = csv.reader(fh)
         row_count = sum(1 for _ in reader)
@@ -240,7 +252,9 @@ def _count_csv_rows(csv_path: Path) -> int:
 def _resolve_departments() -> list[str] | None:
     """Return demo department codes if in demo mode, else None."""
     if DVF_MODE == "demo":
-        logger.info("Demo mode: filtering exports to departments %s", DVF_DEMO_DEPARTMENTS)
+        logger.info(
+            "Demo mode: filtering exports to departments %s", DVF_DEMO_DEPARTMENTS
+        )
         return DVF_DEMO_DEPARTMENTS
     return None
 
@@ -258,12 +272,12 @@ def _build_query_for_table(
         return _build_mutation_query(conn, departments)
     if table_name == "parcelle":
         return _build_parcelle_query(conn, departments)
+    if table_name == "disposition_parcelle":
+        return _build_disposition_parcelle_query(conn, departments)
     return _build_simple_query(table_name, departments)
 
 
-def _table_exists(
-    conn: psycopg2.extensions.connection, table_name: str
-) -> bool:
+def _table_exists(conn: psycopg2.extensions.connection, table_name: str) -> bool:
     """Check whether *table_name* exists in any DVF-relevant schema."""
     placeholders = ", ".join(["%s"] * len(DVF_SCHEMAS))
     query = f"""
