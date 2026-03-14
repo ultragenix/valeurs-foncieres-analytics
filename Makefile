@@ -2,6 +2,7 @@
        docker-up docker-down docker-up-kestra ingest-download ingest-restore \
        ingest-export ingest-geojson ingest-upload bq-load \
        dbt-deps dbt-seed dbt-run dbt-test dbt-build \
+       dashboard-validate \
        run test clean
 
 help: ## Show this help message
@@ -69,6 +70,15 @@ dbt-test: ## Run all dbt tests
 
 dbt-build: ## Full dbt workflow: deps + seed + run + test
 	cd dbt_dvf && uv run dbt deps && uv run dbt seed && uv run dbt run && uv run dbt test
+
+dashboard-validate: ## Validate dashboard data by running tile queries against BigQuery
+	@echo "=== Tile 1: Transaction Count by Property Type ==="
+	bq query --use_legacy_sql=false --project_id=$(shell grep GCP_PROJECT_ID .env | cut -d= -f2) \
+		'SELECT property_type_label, COUNT(*) AS cnt FROM dvf_analytics.fct_transactions GROUP BY 1 ORDER BY cnt DESC LIMIT 10'
+	@echo ""
+	@echo "=== Tile 2: Transaction Volume by Year ==="
+	bq query --use_legacy_sql=false --project_id=$(shell grep GCP_PROJECT_ID .env | cut -d= -f2) \
+		'SELECT transaction_year, COUNT(*) AS cnt, ROUND(AVG(transaction_price_eur), 0) AS avg_price FROM dvf_analytics.fct_transactions GROUP BY 1 ORDER BY 1'
 
 test: ## Run all tests
 	uv run python -m pytest tests/ -v

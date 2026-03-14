@@ -45,6 +45,9 @@ models:
         description: Foreign key to mutations
         tests:
           - not_null
+          - relationships:
+              to: ref('stg_dvf__mutations')
+              field: mutation_id
 
   - name: stg_dvf__locals
     description: >
@@ -60,6 +63,9 @@ models:
         description: Foreign key to mutations
         tests:
           - not_null
+          - relationships:
+              to: ref('stg_dvf__mutations')
+              field: mutation_id
       - name: local_type_code
         description: Premises type code (1=house, 2=apt, 3=outbuilding, 4=commercial)
 
@@ -77,6 +83,9 @@ models:
         description: Foreign key to mutations
         tests:
           - not_null
+          - relationships:
+              to: ref('stg_dvf__mutations')
+              field: mutation_id
       - name: commune_code
         description: INSEE commune code
         tests:

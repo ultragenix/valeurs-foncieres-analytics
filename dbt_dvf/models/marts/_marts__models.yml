@@ -30,16 +30,29 @@ models:
         description: Department code (cluster key 1)
         tests:
           - not_null
+          - relationships:
+              to: ref('dim_geography')
+              field: geo_code
       - name: commune_code
         description: INSEE commune code
+        tests:
+          - relationships:
+              to: ref('dim_communes')
+              field: commune_code
       - name: property_type_code
         description: GnDVF property type code (cluster key 2)
+        tests:
+          - relationships:
+              to: ref('dim_property_types')
+              field: property_type_code
       - name: property_type_label
         description: Property type label
       - name: transaction_price_eur
         description: Transaction price in EUR (always > 0)
         tests:
           - not_null
+          - dbt_utils.expression_is_true:
+              expression: "> 0"
       - name: built_area_sqm
         description: Total built area in square meters
       - name: land_area_sqm
