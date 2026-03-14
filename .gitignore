@@ -234,3 +234,6 @@ data/
 dbt_dvf/target/
 dbt_dvf/dbt_packages/
 dbt_dvf/logs/
+
+#script
+auto-cycle.sh
