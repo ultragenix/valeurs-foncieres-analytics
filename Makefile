@@ -1,3 +1,8 @@
+-include .env
+export
+GOOGLE_APPLICATION_CREDENTIALS := $(CURDIR)/gcp-sa-key.json
+DBT_PROFILES_DIR := $(CURDIR)/dbt_dvf
+
 .PHONY: help setup terraform-init terraform-plan terraform-apply terraform-destroy \
        docker-up docker-down docker-up-kestra ingest-download ingest-restore \
        ingest-export ingest-geojson ingest-upload bq-load \

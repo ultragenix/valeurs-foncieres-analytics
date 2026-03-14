@@ -240,15 +240,15 @@ This creates:
 
 The DVF+ SQL dump is hosted on Cerema Box and requires a manual download:
 
-1. Go to [cerema.app.box.com/v/dvfplus-opendata](https://cerema.app.box.com/v/dvfplus-opendata)
-2. Navigate to the latest folder (e.g. `octobre_2025`)
-3. Download the `.7z` archive for your target region:
+1. Download the `.7z` archive for your target region:
 
-| Region | File size | Department codes | Use case |
-|--------|-----------|-----------------|----------|
-| `R04_La_Reunion` | ~38 MB | `974` | Fastest demo (~5 min) |
-| `R11_Ile_de_France` | ~700 MB | `75,77,78,91,92,93,94,95` | Paris region |
-| `National` (11 files) | ~4-5 GB | All | Full France production |
+| Region | Direct link | File size | Department codes | Use case |
+|--------|------------|-----------|-----------------|----------|
+| `R04_La_Reunion` | [Download](https://cerema.app.box.com/v/dvfplus-opendata/folder/347155412504) | ~38 MB | `974` | Fastest demo (~5 min) |
+| `R11_Ile_de_France` | [Browse](https://cerema.app.box.com/v/dvfplus-opendata) | ~700 MB | `75,77,78,91,92,93,94,95` | Paris region |
+| `National` (11 files) | [Browse](https://cerema.app.box.com/v/dvfplus-opendata) | ~4-5 GB | All | Full France production |
+
+> For other regions, browse [cerema.app.box.com/v/dvfplus-opendata](https://cerema.app.box.com/v/dvfplus-opendata) and navigate to the latest folder.
 
 4. Place the downloaded `.7z` file(s) in the `data/` directory:
 
