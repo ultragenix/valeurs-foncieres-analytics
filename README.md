@@ -293,9 +293,11 @@ For detailed step descriptions, dependencies, and error handling, see [docs/PIPE
 
 ### 7. View the dashboard
 
-The Looker Studio dashboard connects directly to the `dvf_analytics` BigQuery dataset. Setup instructions are in [docs/DASHBOARD.md](docs/DASHBOARD.md).
+**Dashboard URL**: [https://lookerstudio.google.com/reporting/b0b00d24-9d2f-4164-86f2-79e72340f4ac](https://lookerstudio.google.com/reporting/b0b00d24-9d2f-4164-86f2-79e72340f4ac)
 
-Reviewers can access the dashboard via a shareable Looker Studio link without running the full pipeline -- the dashboard points to the production BigQuery dataset populated with the complete France data.
+The Looker Studio dashboard connects directly to the `dvf_analytics` BigQuery dataset. It includes 4 tiles across 2 pages (transaction count, total value, average price evolution, transaction volume) and 2 interactive filters (year, property type). Setup instructions are in [docs/DASHBOARD.md](docs/DASHBOARD.md).
+
+Reviewers can access the dashboard via the link above without running the pipeline.
 
 To validate that the dashboard tiles return correct data:
 

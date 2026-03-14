@@ -4,7 +4,7 @@
 
 The project dashboard is built with [Google Looker Studio](https://lookerstudio.google.com/), connected directly to BigQuery mart tables in the `dvf_analytics` dataset. It provides interactive visualizations of French real estate transactions (DVF+ data).
 
-**Shareable URL**: *After running the pipeline, create the dashboard following the steps below, then paste your shareable Looker Studio URL here.*
+**Shareable URL**: [https://lookerstudio.google.com/reporting/b0b00d24-9d2f-4164-86f2-79e72340f4ac](https://lookerstudio.google.com/reporting/b0b00d24-9d2f-4164-86f2-79e72340f4ac)
 
 ## Data Sources
 
@@ -20,46 +20,53 @@ All tiles connect to BigQuery tables in the `dvf_analytics` dataset:
 
 ## Dashboard Tiles
 
-### Tile 1: Transaction Count by Property Type (Bar Chart)
+### Page 1: Overview
 
-Shows the distribution of transactions across property types.
+**Tile 1: Transaction Count by Property Type (Bar Chart)**
 
-- **Chart type**: Horizontal bar chart
-- **Data source**: `fct_transactions`
+- **Chart type**: Bar chart
 - **Dimension**: `property_type_label`
-- **Metric**: `Record Count` (or `COUNT(transaction_id)`)
+- **Metric**: `Record Count`
 - **Sort**: Descending by metric
-- **Insight**: Reveals which property types dominate the French market (apartments and houses typically lead)
+- **Insight**: Distribution of transactions across property types
 
-### Tile 2: Transaction Volume by Year (Line Chart)
+**Tile 2: Total Transaction Value by Property Type (Bar Chart)**
 
-Shows temporal evolution of transaction volume from 2014 to latest available year.
+- **Chart type**: Bar chart
+- **Dimension**: `property_type_label`
+- **Metric**: `SUM(transaction_price_eur)`
+- **Sort**: Descending by metric
+- **Insight**: Total market value per property type
 
-- **Chart type**: Time series / line chart
-- **Data source**: `fct_transactions`
+### Page 2: Trends
+
+**Tile 3: Average Price Evolution by Year (Line Chart)**
+
+- **Chart type**: Line chart
 - **Dimension**: `transaction_year`
-- **Metric**: `Record Count` (transaction volume)
-- **Optional second metric**: `AVG(transaction_price_eur)` (average price evolution)
+- **Metric**: `AVG(transaction_price_eur)`
 - **Sort**: Ascending by year
-- **Insight**: Shows market trends, COVID-19 impact (2020 dip), and recovery patterns
+- **Insight**: Reveals price trends in the real estate market (2014-2024)
 
-### Tile 3: Median Price per m2 by Department (Bar Chart / Map)
+**Tile 4: Transaction Volume by Year (Line Chart)**
 
-Shows geographic variation in real estate prices.
+- **Chart type**: Line chart
+- **Dimension**: `transaction_year`
+- **Metric**: `Record Count`
+- **Sort**: Ascending by year
+- **Insight**: Shows market activity trends, COVID-19 impact (2020 dip), and recovery patterns
 
-- **Chart type**: Bar chart (sorted descending) or Google Maps geo chart
-- **Data source**: `fct_transactions`
-- **Dimension**: `department_code`
-- **Metric**: `AVG(price_per_sqm)` or `MEDIAN(price_per_sqm)`
-- **Filter**: `price_per_sqm IS NOT NULL`
-- **Insight**: Highlights price disparities between Paris/Ile-de-France and other regions
+### Interactive Filters (both pages)
 
-### Interactive Filter: Department Code
+**Year filter**:
+- **Type**: Drop-down list
+- **Field**: `transaction_year`
+- **Applies to**: All tiles on the page
 
-- **Type**: Drop-down list filter control
-- **Field**: `department_code`
-- **Applies to**: All tiles
-- **Purpose**: Allows reviewers to explore specific departments
+**Property type filter**:
+- **Type**: Drop-down list
+- **Field**: `property_type_label`
+- **Applies to**: All tiles on the page
 
 ## Setup Instructions
 
