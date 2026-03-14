@@ -40,8 +40,14 @@ CEREMA_DOC_URL: str = (
 # Expected archive suffix.
 ARCHIVE_SUFFIX: str = ".7z"
 
-# HTTP request timeout in seconds.
-HTTP_TIMEOUT_SECONDS: int = 30
+# HTTP connection timeout in seconds.
+HTTP_CONNECT_TIMEOUT: int = 30
+
+# HTTP read timeout in seconds (per chunk, generous for large files).
+HTTP_READ_TIMEOUT: int = 120
+
+# Backward-compatible alias (used as connect timeout).
+HTTP_TIMEOUT_SECONDS: int = HTTP_CONNECT_TIMEOUT
 
 # Chunk size for streaming download (1 MB).
 DOWNLOAD_CHUNK_SIZE: int = 1_048_576
@@ -64,37 +70,56 @@ def _find_existing_archives(directory: Path) -> list[Path]:
     return sorted(directory.glob(f"*{ARCHIVE_SUFFIX}"))
 
 
+def _initiate_download(url: str) -> requests.Response | None:
+    """Open a streaming HTTP connection and return the response.
+
+    Returns None if the request fails.
+    """
+    try:
+        response = requests.get(
+            url,
+            stream=True,
+            timeout=(HTTP_CONNECT_TIMEOUT, HTTP_READ_TIMEOUT),
+            allow_redirects=True,
+        )
+        response.raise_for_status()
+    except requests.RequestException as exc:
+        logger.warning("Download from %s failed: %s", url, exc)
+        return None
+    return response
+
+
+def _stream_to_file(
+    response: requests.Response, destination: Path
+) -> None:
+    """Write streaming response content to *destination* with progress."""
+    total_size = int(response.headers.get("content-length", 0))
+    logger.info(
+        "Downloading (%s bytes) ...",
+        f"{total_size:,}" if total_size else "unknown size",
+    )
+    destination.parent.mkdir(parents=True, exist_ok=True)
+    with (
+        open(destination, "wb") as fh,
+        tqdm(
+            total=total_size, unit="B", unit_scale=True, desc=destination.name
+        ) as bar,
+    ):
+        for chunk in response.iter_content(chunk_size=DOWNLOAD_CHUNK_SIZE):
+            fh.write(chunk)
+            bar.update(len(chunk))
+    logger.info("Saved to %s", destination)
+
+
 def _download_with_progress(url: str, destination: Path) -> bool:
     """Stream-download a URL to *destination* with a tqdm progress bar.
 
     Returns True on success, False on failure.
     """
-    try:
-        response = requests.get(
-            url, stream=True, timeout=HTTP_TIMEOUT_SECONDS, allow_redirects=True
-        )
-        response.raise_for_status()
-    except requests.RequestException as exc:
-        logger.warning("Download from %s failed: %s", url, exc)
+    response = _initiate_download(url)
+    if response is None:
         return False
-
-    total_size = int(response.headers.get("content-length", 0))
-    logger.info(
-        "Downloading %s (%s bytes) ...",
-        url,
-        f"{total_size:,}" if total_size else "unknown size",
-    )
-
-    destination.parent.mkdir(parents=True, exist_ok=True)
-    with (
-        open(destination, "wb") as fh,
-        tqdm(total=total_size, unit="B", unit_scale=True, desc=destination.name) as bar,
-    ):
-        for chunk in response.iter_content(chunk_size=DOWNLOAD_CHUNK_SIZE):
-            fh.write(chunk)
-            bar.update(len(chunk))
-
-    logger.info("Saved to %s", destination)
+    _stream_to_file(response, destination)
     return True
 
 
@@ -104,7 +129,7 @@ def _extract_7z(archive_path: Path, target_dir: Path) -> list[Path]:
     Requires the ``py7zr`` package.
     """
     try:
-        import py7zr  # noqa: WPS433 — lazy import, optional dep
+        import py7zr  # noqa: WPS433 -- lazy import, optional dep
     except ImportError:
         logger.error(
             "py7zr is not installed. Run: uv pip install py7zr"
@@ -123,7 +148,7 @@ def _extract_7z(archive_path: Path, target_dir: Path) -> list[Path]:
 
 
 # ---------------------------------------------------------------------------
-# Main workflow
+# Main workflow helpers
 # ---------------------------------------------------------------------------
 def _print_manual_instructions() -> None:
     """Log instructions for manual download from Cerema Box."""
@@ -141,82 +166,127 @@ def _print_manual_instructions() -> None:
     )
 
 
-def download_dvf(manual_file: Path | None = None) -> list[Path]:
-    """Download and extract the DVF+ SQL dump.
-
-    Args:
-        manual_file: Optional path to a pre-downloaded .7z or .sql file.
-
-    Returns:
-        List of .sql file paths ready for restore.
-    """
-    DATA_DIR.mkdir(parents=True, exist_ok=True)
-
-    # ----- Case 1: SQL files already present (idempotent) -----
-    existing_sql = _find_existing_sql_files(DATA_DIR)
+def _return_existing_sql(data_dir: Path) -> list[Path] | None:
+    """Return existing SQL files if present, otherwise None."""
+    existing_sql = _find_existing_sql_files(data_dir)
     if existing_sql:
         logger.info(
-            "SQL file(s) already present in %s — skipping download: %s",
-            DATA_DIR,
+            "SQL file(s) already present in %s -- skipping download: %s",
+            data_dir,
             [f.name for f in existing_sql],
         )
         return existing_sql
+    return None
 
-    # ----- Case 2: User provided a manual file -----
-    if manual_file is not None:
-        manual_path = Path(manual_file).resolve()
-        if not manual_path.exists():
-            logger.error("Provided file does not exist: %s", manual_path)
-            sys.exit(1)
 
-        if manual_path.suffix == ".sql":
-            dest = DATA_DIR / manual_path.name
-            if dest != manual_path:
-                shutil.copy2(manual_path, dest)
-                logger.info("Copied %s to %s", manual_path, dest)
-            return [dest]
+def _handle_manual_sql(manual_path: Path, data_dir: Path) -> list[Path]:
+    """Copy a manual .sql file into data_dir and return its path."""
+    dest = data_dir / manual_path.name
+    if dest != manual_path:
+        shutil.copy2(manual_path, dest)
+        logger.info("Copied %s to %s", manual_path, dest)
+    return [dest]
 
-        if manual_path.suffix == ".7z":
-            dest_archive = DATA_DIR / manual_path.name
-            if dest_archive != manual_path:
-                shutil.copy2(manual_path, dest_archive)
-            return _extract_7z(dest_archive, DATA_DIR)
 
-        logger.error(
-            "Unsupported file format: %s (expected .sql or .7z)", manual_path.suffix
-        )
+def _handle_manual_7z(manual_path: Path, data_dir: Path) -> list[Path]:
+    """Copy a manual .7z archive into data_dir and extract it."""
+    dest_archive = data_dir / manual_path.name
+    if dest_archive != manual_path:
+        shutil.copy2(manual_path, dest_archive)
+    return _extract_7z(dest_archive, data_dir)
+
+
+def _handle_manual_file(
+    manual_file: Path, data_dir: Path
+) -> list[Path]:
+    """Process a user-provided .sql or .7z file.
+
+    Exits with error if file does not exist or format is unsupported.
+    """
+    manual_path = Path(manual_file).resolve()
+    if not manual_path.exists():
+        logger.error("Provided file does not exist: %s", manual_path)
         sys.exit(1)
 
-    # ----- Case 3: Try to extract already-downloaded archive -----
-    existing_archives = _find_existing_archives(DATA_DIR)
-    if existing_archives:
-        logger.info("Found existing archive(s): %s", existing_archives)
-        sql_files: list[Path] = []
-        for archive in existing_archives:
-            sql_files.extend(_extract_7z(archive, DATA_DIR))
-        if sql_files:
-            return sql_files
+    if manual_path.suffix == ".sql":
+        return _handle_manual_sql(manual_path, data_dir)
+    if manual_path.suffix == ".7z":
+        return _handle_manual_7z(manual_path, data_dir)
 
-    # ----- Case 4: Attempt automatic download -----
+    logger.error(
+        "Unsupported file format: %s (expected .sql or .7z)",
+        manual_path.suffix,
+    )
+    sys.exit(1)
+
+
+def _try_existing_archives(data_dir: Path) -> list[Path] | None:
+    """Try to extract already-downloaded archives. Return SQL files or None."""
+    existing_archives = _find_existing_archives(data_dir)
+    if not existing_archives:
+        return None
+
+    logger.info("Found existing archive(s): %s", existing_archives)
+    sql_files: list[Path] = []
+    for archive in existing_archives:
+        sql_files.extend(_extract_7z(archive, data_dir))
+    return sql_files if sql_files else None
+
+
+def _try_automatic_download(data_dir: Path) -> list[Path] | None:
+    """Attempt automatic download from data.gouv.fr. Return SQL files or None."""
+    import py7zr  # noqa: WPS433 -- needed for specific exception handling
+
     logger.info("Attempting download from data.gouv.fr redirect ...")
-    archive_dest = DATA_DIR / "dvfplus.7z"
+    archive_dest = data_dir / "dvfplus.7z"
 
-    if _download_with_progress(DATA_GOUV_RESOURCE_URL, archive_dest):
-        # Check if the downloaded file is actually a .7z archive
-        if archive_dest.stat().st_size > 0:
-            try:
-                return _extract_7z(archive_dest, DATA_DIR)
-            except Exception as exc:
-                logger.warning(
-                    "Extraction failed (file may not be a .7z archive): %s", exc
-                )
-                # The URL might have returned an HTML page instead of the file.
-                archive_dest.unlink(missing_ok=True)
+    if not _download_with_progress(DATA_GOUV_RESOURCE_URL, archive_dest):
+        return None
 
-    # ----- Case 5: Automatic download failed — manual instructions -----
+    if archive_dest.stat().st_size == 0:
+        return None
+
+    try:
+        return _extract_7z(archive_dest, data_dir)
+    except (py7zr.Bad7zFile, OSError) as exc:
+        logger.warning(
+            "Extraction failed (file may not be a .7z archive): %s", exc
+        )
+        archive_dest.unlink(missing_ok=True)
+        return None
+
+
+# ---------------------------------------------------------------------------
+# Main workflow
+# ---------------------------------------------------------------------------
+def _fail_with_manual_instructions() -> None:
+    """Log failure and print manual download instructions, then exit."""
     logger.warning("Automatic download was not successful.")
     _print_manual_instructions()
     sys.exit(1)
+
+
+def download_dvf(manual_file: Path | None = None) -> list[Path]:
+    """Download and extract the DVF+ SQL dump, returning .sql file paths."""
+    DATA_DIR.mkdir(parents=True, exist_ok=True)
+
+    existing = _return_existing_sql(DATA_DIR)
+    if existing:
+        return existing
+
+    if manual_file is not None:
+        return _handle_manual_file(manual_file, DATA_DIR)
+
+    from_archives = _try_existing_archives(DATA_DIR)
+    if from_archives:
+        return from_archives
+
+    from_download = _try_automatic_download(DATA_DIR)
+    if from_download:
+        return from_download
+
+    _fail_with_manual_instructions()
+    return []  # unreachable, satisfies type checker
 
 
 # ---------------------------------------------------------------------------
@@ -240,7 +310,7 @@ def main() -> None:
     """CLI entry point."""
     logging.basicConfig(
         level=logging.INFO,
-        format="%(asctime)s [%(levelname)s] %(name)s — %(message)s",
+        format="%(asctime)s [%(levelname)s] %(name)s -- %(message)s",
     )
     args = _parse_args()
     manual = Path(args.file) if args.file else None

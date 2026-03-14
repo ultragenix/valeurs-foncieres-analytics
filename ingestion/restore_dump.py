@@ -98,9 +98,9 @@ def _build_psql_env() -> dict[str, str]:
     return env
 
 
-def _run_psql_file(sql_file: Path) -> int:
-    """Execute a .sql file via ``psql -f`` and return the exit code."""
-    cmd = [
+def _build_psql_command(sql_file: Path) -> list[str]:
+    """Build the psql command list for executing a SQL file."""
+    return [
         "psql",
         "-h", POSTGRES_HOST,
         "-p", str(POSTGRES_PORT),
@@ -109,6 +109,11 @@ def _run_psql_file(sql_file: Path) -> int:
         "-f", str(sql_file),
         "--set", "ON_ERROR_STOP=off",
     ]
+
+
+def _run_psql_file(sql_file: Path) -> int:
+    """Execute a .sql file via ``psql -f`` and return the exit code."""
+    cmd = _build_psql_command(sql_file)
     logger.info("Running: %s", " ".join(cmd))
     result = subprocess.run(
         cmd,
@@ -165,7 +170,7 @@ def _list_public_tables(conn: psycopg2.extensions.connection) -> list[str]:
 def _count_rows(conn: psycopg2.extensions.connection, table: str) -> int:
     """Return the row count for *table*."""
     with conn.cursor() as cur:
-        cur.execute(f"SELECT COUNT(*) FROM {table};")  # noqa: S608 — table name from constant list
+        cur.execute(f"SELECT COUNT(*) FROM {table};")  # noqa: S608 -- table name from constant list
         result = cur.fetchone()
         return result[0] if result else 0
 
@@ -189,37 +194,72 @@ def _table_has_column(
 # ---------------------------------------------------------------------------
 # Demo-mode filtering
 # ---------------------------------------------------------------------------
+def _delete_outside_departments(
+    conn: psycopg2.extensions.connection,
+    table: str,
+    departments: list[str],
+) -> None:
+    """Delete rows from *table* where coddep is not in *departments*."""
+    placeholders = ", ".join(["%s"] * len(departments))
+    delete_sql = (
+        f"DELETE FROM {table} WHERE coddep NOT IN ({placeholders});"  # noqa: S608
+    )
+    with conn.cursor() as cur:
+        cur.execute(delete_sql, departments)
+        deleted = cur.rowcount
+    conn.commit()
+    logger.info(
+        "Table %s: deleted %s rows outside demo departments.",
+        table,
+        f"{deleted:,}",
+    )
+
+
 def _filter_demo_departments(conn: psycopg2.extensions.connection) -> None:
     """Delete rows outside demo departments from all tables with coddep."""
     departments = DVF_DEMO_DEPARTMENTS
     if not departments:
-        logger.warning("DVF_DEMO_DEPARTMENTS is empty — skipping filter.")
+        logger.warning("DVF_DEMO_DEPARTMENTS is empty -- skipping filter.")
         return
 
-    logger.info(
-        "Demo mode: keeping only departments %s", departments
-    )
+    logger.info("Demo mode: keeping only departments %s", departments)
 
     for table in TABLES_WITH_CODDEP:
         if not _table_has_column(conn, table, "coddep"):
-            logger.info("Table %s has no coddep column — skipping.", table)
+            logger.info("Table %s has no coddep column -- skipping.", table)
             continue
-
-        # Use parameterised IN clause.
-        placeholders = ", ".join(["%s"] * len(departments))
-        delete_sql = (
-            f"DELETE FROM {table} WHERE coddep NOT IN ({placeholders});"  # noqa: S608
-        )
-        with conn.cursor() as cur:
-            cur.execute(delete_sql, departments)
-            deleted = cur.rowcount
-        conn.commit()
-        logger.info("Table %s: deleted %s rows outside demo departments.", table, f"{deleted:,}")
+        _delete_outside_departments(conn, table, departments)
 
 
 # ---------------------------------------------------------------------------
 # Verification
 # ---------------------------------------------------------------------------
+def _check_principal_tables(tables: list[str]) -> bool:
+    """Check that all principal tables exist. Return False if any missing."""
+    missing = [t for t in EXPECTED_PRINCIPAL_TABLES if t not in tables]
+    if missing:
+        logger.error("Missing principal tables: %s", missing)
+        return False
+    return True
+
+
+def _log_missing_annexe_tables(tables: list[str]) -> None:
+    """Log a warning if any annexe tables are missing."""
+    missing = [t for t in EXPECTED_ANNEXE_TABLES if t not in tables]
+    if missing:
+        logger.warning("Missing annexe tables: %s", missing)
+
+
+def _log_table_row_counts(
+    conn: psycopg2.extensions.connection, tables: list[str]
+) -> None:
+    """Log row counts for each principal table that exists."""
+    for table in EXPECTED_PRINCIPAL_TABLES:
+        if table in tables:
+            count = _count_rows(conn, table)
+            logger.info("Table %-25s: %s rows", table, f"{count:,}")
+
+
 def _verify_restore(conn: psycopg2.extensions.connection) -> bool:
     """Verify the restore produced the expected tables and data.
 
@@ -228,74 +268,87 @@ def _verify_restore(conn: psycopg2.extensions.connection) -> bool:
     tables = _list_public_tables(conn)
     logger.info("Tables found in public schema (%d): %s", len(tables), tables)
 
-    missing_principal = [
-        t for t in EXPECTED_PRINCIPAL_TABLES if t not in tables
-    ]
-    if missing_principal:
-        logger.error("Missing principal tables: %s", missing_principal)
+    if not _check_principal_tables(tables):
         return False
 
-    missing_annexe = [t for t in EXPECTED_ANNEXE_TABLES if t not in tables]
-    if missing_annexe:
-        logger.warning("Missing annexe tables: %s", missing_annexe)
-
-    # Row counts for key tables.
-    for table in EXPECTED_PRINCIPAL_TABLES:
-        if table in tables:
-            count = _count_rows(conn, table)
-            logger.info("Table %-25s: %s rows", table, f"{count:,}")
+    _log_missing_annexe_tables(tables)
+    _log_table_row_counts(conn, tables)
 
     mutation_count = _count_rows(conn, "mutation") if "mutation" in tables else 0
     if mutation_count == 0:
-        logger.error("mutation table has 0 rows — restore may have failed.")
+        logger.error("mutation table has 0 rows -- restore may have failed.")
         return False
 
-    logger.info("Verification passed: %d tables, %s mutations.", len(tables), f"{mutation_count:,}")
+    logger.info(
+        "Verification passed: %d tables, %s mutations.",
+        len(tables),
+        f"{mutation_count:,}",
+    )
     return True
+
+
+# ---------------------------------------------------------------------------
+# Main workflow helpers
+# ---------------------------------------------------------------------------
+def _execute_sql_files(sql_files: list[Path]) -> list[int]:
+    """Execute each SQL file via psql and return exit codes."""
+    exit_codes: list[int] = []
+    for sql_file in sql_files:
+        code = _run_psql_file(sql_file)
+        exit_codes.append(code)
+    return exit_codes
+
+
+def _check_all_failed(exit_codes: list[int]) -> bool:
+    """Return True if all SQL restores returned non-zero exit codes."""
+    return len(exit_codes) > 0 and all(c != 0 for c in exit_codes)
+
+
+def _post_restore_processing(conn: psycopg2.extensions.connection) -> bool:
+    """Run demo filtering and verification. Return True if successful."""
+    if DVF_MODE == "demo":
+        _filter_demo_departments(conn)
+    return _verify_restore(conn)
 
 
 # ---------------------------------------------------------------------------
 # Main workflow
 # ---------------------------------------------------------------------------
-def restore_dump() -> None:
-    """Find .sql files in data/ and restore them into PostgreSQL."""
+def _get_sql_files_or_exit() -> list[Path]:
+    """Return SQL files from DATA_DIR, or exit if none found."""
     sql_files = _find_sql_files(DATA_DIR)
     if not sql_files:
         logger.error(
             "No .sql files found in %s. Run download_dvf.py first.", DATA_DIR
         )
         sys.exit(1)
+    logger.info(
+        "Found %d SQL file(s) to restore: %s",
+        len(sql_files),
+        [f.name for f in sql_files],
+    )
+    return sql_files
 
-    logger.info("Found %d SQL file(s) to restore: %s", len(sql_files), [f.name for f in sql_files])
 
-    # Ensure PostGIS is available before restoring.
+def _prepare_database() -> None:
+    """Ensure PostGIS extension is available before restoring."""
     conn = _get_connection()
     try:
         _ensure_postgis(conn)
     finally:
         conn.close()
 
-    # Execute each SQL file via psql.
-    exit_codes: list[int] = []
-    for sql_file in sql_files:
-        code = _run_psql_file(sql_file)
-        exit_codes.append(code)
 
-    # Some warnings are expected (e.g. "relation already exists").
-    # We only fail hard if ALL files had non-zero exit codes.
-    all_failed = all(c != 0 for c in exit_codes)
-    if all_failed and len(exit_codes) > 0:
+def _restore_and_verify(sql_files: list[Path]) -> None:
+    """Execute SQL files, apply demo filtering, and verify."""
+    exit_codes = _execute_sql_files(sql_files)
+    if _check_all_failed(exit_codes):
         logger.error("All SQL restores returned non-zero exit codes.")
         sys.exit(1)
 
-    # Demo-mode filtering.
     conn = _get_connection()
     try:
-        if DVF_MODE == "demo":
-            _filter_demo_departments(conn)
-
-        # Verify the restore.
-        success = _verify_restore(conn)
+        success = _post_restore_processing(conn)
     finally:
         conn.close()
 
@@ -303,6 +356,12 @@ def restore_dump() -> None:
         logger.error("Restore verification failed.")
         sys.exit(1)
 
+
+def restore_dump() -> None:
+    """Find .sql files in data/ and restore them into PostgreSQL."""
+    sql_files = _get_sql_files_or_exit()
+    _prepare_database()
+    _restore_and_verify(sql_files)
     logger.info("Restore complete.")
 
 
@@ -313,7 +372,7 @@ def main() -> None:
     """CLI entry point."""
     logging.basicConfig(
         level=logging.INFO,
-        format="%(asctime)s [%(levelname)s] %(name)s — %(message)s",
+        format="%(asctime)s [%(levelname)s] %(name)s -- %(message)s",
     )
     restore_dump()
 
