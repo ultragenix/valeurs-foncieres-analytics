@@ -1,20 +1,21 @@
 # Pipeline Documentation
 
-Data ingestion pipeline for DVF+ France real estate transactions. This document covers the implemented pipeline steps (Parts 2--4). Kestra orchestration (Part 7) will wrap these steps into a single DAG.
+Data pipeline for DVF+ France real estate transactions. This document covers all implemented pipeline steps (Parts 2--5). Kestra orchestration (Part 7) will wrap these steps into a single DAG.
 
 ## Pipeline Overview
 
 ```
-Step 1          Step 2           Step 3          Step 4         Step 5         Step 6
-download_dvf -> restore_dump --> export_tables -> download_geo   upload_gcs --> bq_load
-(HTTP)          (psql)           (COPY TO CSV)   (HTTP)          (GCS API)     (BQ API)
-                     |                                |              ^             |
-                     v                                v              |             v
-               PostgreSQL                        data/geojson/      |       BigQuery
-               (ephemeral)                                          |       dvf_raw
-                     |                                              |
-                     v                                              |
-               data/export/*.csv -----------------------------------+
+Step 1          Step 2           Step 3          Step 4         Step 5         Step 6         Step 7
+download_dvf -> restore_dump --> export_tables -> download_geo   upload_gcs --> bq_load -----> dbt_build
+(HTTP)          (psql)           (COPY TO CSV)   (HTTP)          (GCS API)     (BQ API)       (dbt-bigquery)
+                     |                                |              ^             |              |
+                     v                                v              |             v              v
+               PostgreSQL                        data/geojson/      |       BigQuery        BigQuery
+               (ephemeral)                                          |       dvf_raw         dvf_staging
+                     |                                              |                      dvf_analytics
+                     v                                              |                          |
+               data/export/*.csv -----------------------------------+                          v
+                                                                                        Looker Studio
 ```
 
 ## Step Details
@@ -169,6 +170,41 @@ uv run python -m ingestion.load_to_bigquery
 
 **Dependencies:** BigQuery datasets exist, GCS bucket contains data, `GCP_PROJECT_ID` and `BQ_DATASET_RAW` configured.
 
+### Step 7: dbt Transformations
+
+| Attribute | Value |
+|-----------|-------|
+| Tool | dbt-core + dbt-bigquery |
+| Makefile target | `make dbt-build` (deps + run + test) |
+| Input | BigQuery `dvf_raw` tables (from Step 6) |
+| Output | 6 views in `dvf_staging`, 5 tables in `dvf_analytics` |
+| Duration | ~2--5 minutes |
+| Idempotent | Yes -- views are recreated, tables use `CREATE OR REPLACE` |
+
+**Prerequisites:** Step 6 complete. BigQuery datasets provisioned. `DBT_PROFILES_DIR` set in `.env`.
+
+**Commands:**
+
+```bash
+# Full workflow (recommended)
+make dbt-build
+
+# Individual steps
+make dbt-deps    # Install dbt packages (dbt_utils)
+make dbt-run     # Run all 12 dbt models
+make dbt-test    # Run all 62 dbt tests
+```
+
+**Model execution order** (managed by dbt's dependency graph):
+
+1. **Staging views** (6 models, in parallel): `stg_dvf__mutations`, `stg_dvf__dispositions`, `stg_dvf__locals`, `stg_dvf__parcelles`, `stg_geo__departments`, `stg_geo__communes`
+2. **Intermediate view** (1 model): `int_transactions__enriched` -- depends on 4 staging models
+3. **Mart tables** (5 models): `fct_transactions`, `dim_communes`, `dim_property_types`, `dim_dates`, `dim_geography` -- depend on staging and/or intermediate models
+
+**dbt data tests** (62 tests): unique, not_null, relationships, accepted_values, expression_is_true. All tests run automatically during `make dbt-build`.
+
+**Dependencies:** BigQuery raw tables loaded, `GOOGLE_APPLICATION_CREDENTIALS` set, `GCP_PROJECT_ID` set, `DBT_PROFILES_DIR` set.
+
 ## Step Dependencies
 
 ```
@@ -181,9 +217,15 @@ Step 4 (download_geojson) --------------------------------------------------+   
                                                                             |
                                                                             v
                                                                     Step 6 (bq_load)
+                                                                            |
+                                                                            v
+                                                                    Step 7 (dbt_build)
+                                                                            |
+                                                                            v
+                                                                    Looker Studio
 ```
 
-Steps 1--3 are sequential (each depends on the previous). Step 4 is independent and can run in parallel with Steps 1--3. Step 5 requires both Step 3 and Step 4 to complete. Step 6 requires Step 5.
+Steps 1--3 are sequential (each depends on the previous). Step 4 is independent and can run in parallel with Steps 1--3. Step 5 requires both Step 3 and Step 4 to complete. Step 6 requires Step 5. Step 7 requires Step 6.
 
 ## Error Handling
 
@@ -197,6 +239,7 @@ Each step implements the following error handling patterns:
 | Idempotency | All steps can be re-run safely (overwrite mode) |
 | Progress bars | Long-running steps display `tqdm` progress bars |
 | Partial failure | BigQuery loading processes all blobs and reports total; GeoJSON with no features is skipped with a warning |
+| dbt tests | dbt reports test failures with details; `make dbt-build` stops on test failure |
 
 ## Running the Full Pipeline (Manual)
 
@@ -222,6 +265,12 @@ make docker-down
 
 # 5. Load into BigQuery
 make bq-load
+
+# 6. Run dbt transformations
+make dbt-build
+
+# 7. Validate dashboard data
+make dashboard-validate
 ```
 
 ## Planned: Kestra Orchestration (Part 7)
@@ -233,16 +282,3 @@ The Kestra DAG (`kestra/flows/dvf_pipeline.yml`) will wrap all steps into a sing
 - Trigger support (manual and scheduled)
 
 The DAG will be accessible via the Kestra web UI at `http://localhost:8080` (after `make docker-up-kestra`).
-
-## Planned: dbt Transformations (Part 5)
-
-After BigQuery loading, dbt will transform raw tables into a Kimball star schema:
-- **Staging**: clean each raw table independently (`stg_dvf__mutations`, `stg_dvf__dispositions`, etc.)
-- **Intermediate**: join mutation + disposition + local + parcelle into `int_transactions__enriched`
-- **Marts**: `fct_transactions` (fact), `dim_communes`, `dim_property_types`, `dim_dates`, `dim_geography` (dimensions)
-
-Command (placeholder):
-
-```bash
-make dbt-run
-```

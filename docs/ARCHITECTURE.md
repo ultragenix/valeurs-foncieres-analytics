@@ -1,10 +1,10 @@
 # Architecture
 
-Technical architecture for the DVF+ France real estate analytics pipeline. This document covers validated and implemented components (Parts 1--4). Planned components are noted where relevant.
+Technical architecture for the DVF+ France real estate analytics pipeline. This document covers validated and implemented components (Parts 1--6). Part 7 (Kestra orchestration) is planned.
 
 ## System Overview
 
-The pipeline ingests France's DVF+ real estate transaction dataset (PostgreSQL dump, 17 tables, ~20M transactions) into a cloud-native analytics stack on GCP. Data flows from Cerema's open data portal through an ephemeral PostgreSQL container, into GCS as a data lake, and finally into BigQuery as the analytical data warehouse.
+The pipeline ingests France's DVF+ real estate transaction dataset (PostgreSQL dump, 17 tables, ~20M transactions) into a cloud-native analytics stack on GCP. Data flows from Cerema's open data portal through an ephemeral PostgreSQL container, into GCS as a data lake, into BigQuery raw tables, through dbt transformations into a Kimball star schema, and finally into a Looker Studio dashboard.
 
 ```
 +-------------------+     +-----------------------------+     +-------------------+
@@ -15,11 +15,13 @@ The pipeline ingests France's DVF+ real estate transaction dataset (PostgreSQL d
 |                   |     |                             |     |         |         |
 |  Etalab           |---->|  data/export/*.csv          |---->|         v         |
 |  (GeoJSON bounds) |     |  data/geojson/*.geojson     |     |  BigQuery         |
-+-------------------+     +-----------------------------+     |  dvf_raw (loaded) |
-                                                              |  dvf_staging (dbt)|
++-------------------+     +-----------------------------+     |  dvf_raw  (raw)   |
+                                                              |      |            |
+                                                              |  dbt v            |
+                                                              |  dvf_staging      |
                                                               |  dvf_analytics    |
-                                                              |         |         |
-                                                              |         v         |
+                                                              |      |            |
+                                                              |      v            |
                                                               |  Looker Studio    |
                                                               +-------------------+
 ```
@@ -36,7 +38,7 @@ All GCP resources are provisioned via Terraform (>= 1.5) using the `hashicorp/go
 |----------|------|---------|
 | `google_storage_bucket.data_lake` | GCS bucket | Raw data landing zone (CSV + GeoJSON) |
 | `google_bigquery_dataset.raw` | BigQuery dataset | `dvf_raw` -- raw tables loaded from GCS |
-| `google_bigquery_dataset.staging` | BigQuery dataset | `dvf_staging` -- dbt staging views |
+| `google_bigquery_dataset.staging` | BigQuery dataset | `dvf_staging` -- dbt staging/intermediate views |
 | `google_bigquery_dataset.analytics` | BigQuery dataset | `dvf_analytics` -- dbt mart tables |
 | `google_service_account.dvf_pipeline` | Service account | Identity for pipeline scripts |
 | IAM bindings (3) | IAM | Storage Object Admin, BigQuery Data Editor, BigQuery Job User |
@@ -152,7 +154,7 @@ Loads all data from GCS into BigQuery raw tables (`dvf_raw` dataset). Handles tw
 - Each feature is converted to a flat dict row: properties as columns + geometry as JSON string
 - Loaded via `load_table_from_json` with a partial schema ensuring `geometry` is STRING
 - File-to-table mapping: `departements-1000m.geojson` / `departments.geojson` to `geo_departments`, `communes-1000m.geojson` / `communes.geojson` to `geo_communes`
-- Geometry-to-GEOGRAPHY conversion will happen in the dbt staging layer via `ST_GEOGFROMGEOJSON()`
+- Geometry-to-GEOGRAPHY conversion happens in the dbt staging layer via `ST_GEOGFROMGEOJSON()`
 
 **Input**: GCS bucket contents
 **Output**: BigQuery tables in `dvf_raw` dataset
@@ -179,15 +181,89 @@ After loading, the `dvf_raw` dataset contains:
 
 For detailed partitioning and clustering rationale, see [PARTITIONING.md](PARTITIONING.md).
 
-### 5. Planned Components
+### 5. dbt Transformations (`dbt_dvf/`)
 
-The following components are designed but not yet implemented:
+The dbt project transforms raw BigQuery tables into a Kimball star schema using dbt-core with the dbt-bigquery adapter. The project uses `dbt_utils` (>= 1.1.0) for the date spine macro.
 
-**dbt Transformations (Part 5)**: Staging views to clean each source table, an intermediate join model (`int_transactions__enriched`), and Kimball star schema marts (`fct_transactions`, `dim_communes`, `dim_property_types`, `dim_dates`, `dim_geography`). See [DATA_SOURCES.md](DATA_SOURCES.md) for the target schema.
+**Project structure:**
+- **Profile**: connects to BigQuery via service account key, targets `dvf_staging` as the default dataset
+- **Schema routing**: a custom `generate_schema_name` macro routes models to their target datasets. Models without a custom schema go to `dvf_staging`; mart models with `schema='dvf_analytics'` go directly to `dvf_analytics`.
 
-**Looker Studio Dashboard (Part 6)**: Interactive dashboard connected to BigQuery marts with at minimum 2 tiles: transaction count by property type and price evolution by year.
+#### 5.1 Staging Layer (6 views in `dvf_staging`)
 
-**Kestra Orchestration (Part 7)**: End-to-end DAG wiring all pipeline steps into a single orchestrated flow with error handling and retry logic.
+Staging views clean and rename raw table columns to English, cast types explicitly, and apply basic filters:
+
+| Model | Source Table | Key Transformations |
+|-------|-------------|-------------------|
+| `stg_dvf__mutations` | `dvf_raw.mutation` | Rename columns to English, cast types, parse date from string, filter `transaction_price_eur > 0` (removes non-market transactions) |
+| `stg_dvf__dispositions` | `dvf_raw.disposition` | Rename columns, cast types |
+| `stg_dvf__locals` | `dvf_raw.local` | Rename columns, cast types, parse date |
+| `stg_dvf__parcelles` | `dvf_raw.disposition_parcelle` | Rename columns, cast types, parse date. Sources from `disposition_parcelle` (richer than `parcelle`: includes commune code, dates, land surfaces) |
+| `stg_geo__departments` | `dvf_raw.geo_departments` | Rename `code`/`nom` to English, convert geometry STRING to BigQuery GEOGRAPHY via `SAFE.ST_GEOGFROMGEOJSON()` |
+| `stg_geo__communes` | `dvf_raw.geo_communes` | Rename `code`/`nom` to English, convert geometry to GEOGRAPHY |
+
+All staging models are materialized as **views** (no storage cost, always fresh).
+
+#### 5.2 Intermediate Layer (1 view in `dvf_staging`)
+
+| Model | Description |
+|-------|-------------|
+| `int_transactions__enriched` | Joins mutation data with aggregated disposition, local, and parcelle information at one row per mutation. Commune code sourced from parcelle data with fallback to the mutation's own commune code. Aggregations: disposition count and total price, max room count from locals, first commune code from parcelles. |
+
+Materialized as a **view**.
+
+#### 5.3 Mart Layer (5 tables in `dvf_analytics`)
+
+| Model | Grain | Materialization | Partitioning | Clustering |
+|-------|-------|-----------------|-------------|------------|
+| `fct_transactions` | One row per transaction (mutation) | Table | `transaction_year` (integer range, 2014--2026) | `department_code`, `property_type_code` |
+| `dim_communes` | One row per commune (municipality) | Table | None | None |
+| `dim_property_types` | One row per property type code | Table | None | None |
+| `dim_dates` | One row per day (2014-01-01 to 2025-12-31) | Table | None | None |
+| `dim_geography` | One row per geographic entity (dept or commune) | Table | None | None |
+
+**`fct_transactions`**: Selects from `int_transactions__enriched`, computes `price_per_sqm` as `SAFE_DIVIDE(transaction_price_eur, NULLIF(total_built_area_sqm, 0))`. Includes transaction price, areas, premises counts, room count, location coordinates, VEFA flag, and mutation nature.
+
+**`dim_communes`**: Distinct commune codes from parcelle data joined with GeoJSON commune names. Falls back to commune code if no name match.
+
+**`dim_property_types`**: Distinct property type codes from mutations with level 1 classification (1=Built property, 2=Unbuilt land).
+
+**`dim_dates`**: Generated via `dbt_utils.date_spine` with day granularity. Includes year, quarter, month, month name, day of week, and is_weekend flag.
+
+**`dim_geography`**: Union of department and commune boundaries from the geo staging models. Includes `geo_level` indicator ('department' or 'commune'), BigQuery GEOGRAPHY type, and computed centroids.
+
+#### 5.4 dbt Data Tests (62 tests)
+
+| Test Type | Coverage |
+|-----------|----------|
+| `unique` | All primary keys across staging, intermediate, and mart models |
+| `not_null` | All primary keys, foreign keys, and critical business columns |
+| `relationships` | `stg_dvf__dispositions.mutation_id` to staging mutations, `stg_dvf__locals.mutation_id` to staging mutations, `stg_dvf__parcelles.mutation_id` to staging mutations, `fct_transactions.department_code` to `dim_geography`, `fct_transactions.commune_code` to `dim_communes`, `fct_transactions.property_type_code` to `dim_property_types` |
+| `accepted_values` | `dim_property_types.property_type_level1` in ('1', '2'), `dim_geography.geo_level` in ('department', 'commune') |
+| `expression_is_true` | `fct_transactions.transaction_price_eur > 0` |
+
+### 6. Looker Studio Dashboard
+
+The dashboard connects to BigQuery mart tables in the `dvf_analytics` dataset and provides interactive visualizations:
+
+| Tile | Chart Type | Dimension | Metric |
+|------|-----------|-----------|--------|
+| Tile 1: Transaction Count by Property Type | Horizontal bar chart | `property_type_label` | Record Count |
+| Tile 2: Transaction Volume by Year | Line chart | `transaction_year` | Record Count (+ optional avg price) |
+| Tile 3: Price per m2 by Department | Bar chart or map | `department_code` | AVG(`price_per_sqm`) |
+| Filter: Department Code | Drop-down list | `department_code` | N/A |
+
+Setup requires manual creation in the Looker Studio web UI. Full instructions and validation queries are in [DASHBOARD.md](DASHBOARD.md).
+
+### 7. Planned: Kestra Orchestration (Part 7)
+
+The Kestra DAG (`kestra/flows/dvf_pipeline.yml`) will wrap all pipeline steps (ingestion + dbt) into a single orchestrated flow with:
+- Sequential task execution following the dependency graph
+- Error handling and retry logic
+- Logging and monitoring via Kestra UI
+- Trigger support (manual and scheduled)
+
+The DAG will be accessible via the Kestra web UI at `http://localhost:8080` (after `make docker-up-kestra`).
 
 ## Networking
 
@@ -210,6 +286,7 @@ All external connections use HTTPS. No inbound connections from the internet are
 - PostgreSQL uses local-only credentials (`dvf_local_only`) -- ephemeral container with no persistent data
 - Archive extraction validates members for path traversal attacks
 - Department code inputs validated against regex before SQL embedding
+- dbt connects to BigQuery via service account key (no password in connection string)
 - No secrets in code, Terraform files, or documentation
 
 ## Data Volumes
@@ -222,6 +299,8 @@ All external connections use HTTPS. No inbound connections from the internet are
 | GeoJSON download | ~10 MB | ~10 MB |
 | GCS storage | ~60 MB | ~5--10 GB |
 | BigQuery raw tables | ~60 MB | ~5--10 GB |
+| BigQuery staging views | 0 (views) | 0 (views) |
+| BigQuery mart tables | ~60 MB | ~5--10 GB |
 
 ## Pipeline Modes
 
@@ -232,4 +311,4 @@ The `DVF_MODE` environment variable controls the pipeline scope:
 | Demo | `demo` (default) | 2 (Paris + Marseille) | ~10 minutes | Peer reviewer reproduction |
 | Full | `full` | All 101 | ~1--2 hours | Production dashboard |
 
-In demo mode, the restore step filters data to keep only configured departments (default: `DVF_DEMO_DEPARTMENTS=75,13`). All downstream steps (export, upload, BigQuery load) work with the filtered dataset. The BigQuery partitioning and clustering configuration is identical in both modes.
+In demo mode, the restore step filters data to keep only configured departments (default: `DVF_DEMO_DEPARTMENTS=75,13`). All downstream steps (export, upload, BigQuery load, dbt transforms) work with the filtered dataset. The BigQuery partitioning and clustering configuration is identical in both modes.

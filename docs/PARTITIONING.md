@@ -4,8 +4,8 @@
 
 This document describes the partitioning and clustering strategy applied at two layers:
 
-1. **Raw layer** (`dvf_raw.mutation`): integer range partitioning on `anneemut` (year) and clustering on `coddep`, `codtypbien`. Applied at load time by `load_to_bigquery.py`.
-2. **Mart layer** (`dvf_analytics.fct_transactions`): integer range partitioning on `transaction_year` and clustering on `department_code`, `property_type_code`. Applied by dbt materialization config.
+1. **Raw layer** (`dvf_raw.mutation`): integer range partitioning on `anneemut` (year) and clustering on `coddep`, `codtypbien`. Applied at load time by `load_to_bigquery.py`. Implemented in Part 4.
+2. **Mart layer** (`dvf_analytics.fct_transactions`): integer range partitioning on `transaction_year` and clustering on `department_code`, `property_type_code`. Applied by dbt materialization config in `dbt_dvf/models/marts/fct_transactions.sql`. Implemented in Part 5.
 
 Both layers use the same strategy because the query patterns are consistent across raw exploration and dashboard queries.
 

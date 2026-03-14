@@ -2,7 +2,7 @@
 
 End-to-end data pipeline for French real estate transaction analytics using the DVF+ dataset (20M+ transactions, 2014--2025).
 
-**Current status:** Parts 1--4 validated (infrastructure, ingestion, export to GCS, BigQuery loading). See [STATE.md](STATE.md) for detailed progress.
+**Current status:** Parts 1--4 and 6 validated (infrastructure, ingestion, export, BigQuery loading, dbt transformations built, Looker Studio dashboard). Part 5 (dbt) fix applied and awaiting re-review. Part 7 (Kestra orchestration) pending. See [STATE.md](STATE.md) for detailed progress.
 
 ## Problem Statement
 
@@ -14,7 +14,7 @@ This project builds a **cloud-native analytics pipeline on GCP** that ingests th
 
 ## Architecture
 
-The diagram below shows the full target architecture. Components marked with `[BUILT]` are implemented and validated; others are planned for upcoming parts.
+Components marked with `[BUILT]` are implemented and validated; `[PENDING]` items are planned for upcoming parts.
 
 ```
                                 LOCAL MACHINE (Docker)
@@ -48,18 +48,18 @@ ETALAB / IGN                    |                                   |
                                 |    mutation (partitioned/clustered)|
                                 |    disposition, local, parcelle...|
                                 |    geo_departments, geo_communes  |
-                                |  dvf_staging   (dbt views)        |  (Part 5: dbt)
-                                |  dvf_analytics (dbt marts)        |  (Part 5: dbt)
+                                |  dvf_staging   (dbt views)        |  [BUILT]
+                                |    stg_dvf__mutations, etc. (6)   |
+                                |  dvf_analytics (dbt marts)        |  [BUILT]
                                 |    fct_transactions               |
                                 |      partitioned: year            |
                                 |      clustered: dept, type        |
                                 |    dim_communes                   |
                                 |    dim_property_types             |
-                                |    dim_dates                      |
-                                |    dim_geography                  |
+                                |    dim_dates, dim_geography       |
                                 +----------------+------------------+
                                                  |
-                                      Looker Studio (Part 6)
+                                      Looker Studio                [BUILT]
                                                  |
                                                  v
                                 +-----------------------------------+
@@ -69,7 +69,7 @@ ETALAB / IGN                    |                                   |
                                 |    Tile 3: price/m2 by dept      |
                                 +-----------------------------------+
 
-ORCHESTRATION: Kestra DAG (Part 7) ties all steps into a single end-to-end pipeline
+ORCHESTRATION: Kestra DAG (Part 7) ties all steps into a single end-to-end pipeline  [PENDING]
 ```
 
 ## Tech Stack
@@ -88,9 +88,9 @@ ORCHESTRATION: Kestra DAG (Part 7) ties all steps into a single end-to-end pipel
 | Package Manager | uv | Fast Python dependency management |
 | Temporary Database | PostgreSQL 16 + PostGIS 3.4 | Restore DVF+ SQL dump, export tables to CSV |
 
-## Data Model (Target)
+## Data Model
 
-The project will implement a **Kimball star schema** in BigQuery with one fact table and four dimension tables (Part 5 -- dbt transformations):
+The project implements a **Kimball star schema** in BigQuery with one fact table and four dimension tables, built using dbt-bigquery (12 models: 6 staging views, 1 intermediate view, 5 mart tables):
 
 ```
                     +-------------------+
@@ -110,46 +110,57 @@ The project will implement a **Kimball star schema** in BigQuery with one fact t
                     +-------------------+
 ```
 
-**`fct_transactions`** -- One row per real estate transaction (mutation). Includes transaction price, land area, built area, computed price per square meter, property type, location, and VEFA (off-plan sale) flag. Partitioned by `transaction_year` (integer range), clustered by `department_code` and `property_type_code`.
+**`fct_transactions`** -- One row per real estate transaction (mutation). Includes transaction price, land area, built area, computed price per square meter, property type, location, and VEFA (off-plan sale) flag. Partitioned by `transaction_year` (integer range, 2014--2026), clustered by `department_code` and `property_type_code`. Written to `dvf_analytics` dataset.
 
-**`dim_communes`** -- Commune reference table with INSEE code, department code, and postal code.
+**`dim_communes`** -- Commune dimension built from parcelle data joined with GeoJSON commune names. Contains INSEE code, commune name, and department code.
 
-**`dim_property_types`** -- Property type hierarchy based on the GnDVF classification (built vs. unbuilt, with subtypes: house, apartment, outbuilding, commercial premises, land).
+**`dim_property_types`** -- Property type hierarchy based on the GnDVF classification. Level 1 splits built properties (code starting with 1) from unbuilt land (code starting with 2).
 
-**`dim_dates`** -- Date spine from 2014-01-01 to 2025-12-31 with year, quarter, month, and day-of-week attributes.
+**`dim_dates`** -- Date spine generated with `dbt_utils.date_spine`, covering 2014-01-01 to 2025-12-31 with year, quarter, month, month name, day-of-week, and is_weekend attributes.
 
-**`dim_geography`** -- Geographic boundaries from GeoJSON (departments and communes) with names, region codes, and geometry for map visualizations.
+**`dim_geography`** -- Geographic boundaries from GeoJSON (departments and communes) unioned into a single table with geo_level indicator. Includes BigQuery GEOGRAPHY type for map visualizations and computed centroids.
 
-### Data Flow (current state)
-
-The following stages are implemented and validated (Parts 1--4):
+### Data Flow
 
 ```
-PostgreSQL (temp)       GCS (raw CSV)                  BigQuery (dvf_raw)
------------------       ---------------                ------------------
-mutation           -->  raw/dvf/mutation.csv       -->  mutation (partitioned + clustered)
-disposition        -->  raw/dvf/disposition.csv    -->  disposition
-local              -->  raw/dvf/local.csv          -->  local
-disposition_parcelle->  raw/dvf/disp_parcelle.csv  -->  disposition_parcelle
-parcelle           -->  raw/dvf/parcelle.csv       -->  parcelle
-adresse            -->  raw/dvf/adresse.csv        -->  adresse
-ann_* (5 tables)   -->  raw/dvf/ann_*.csv          -->  ann_* (5 tables)
-
-dept.geojson       -->  raw/geojson/dept-1000m...  -->  geo_departments
-communes.geojson   -->  raw/geojson/comm-1000m...  -->  geo_communes
+PostgreSQL (temp)       GCS (raw CSV)                  BigQuery (dvf_raw)         dbt (staging/marts)
+-----------------       ---------------                ------------------         -------------------
+mutation           -->  raw/dvf/mutation.csv       -->  mutation (part/clust) -->  stg_dvf__mutations
+disposition        -->  raw/dvf/disposition.csv    -->  disposition           -->  stg_dvf__dispositions
+local              -->  raw/dvf/local.csv          -->  local                 -->  stg_dvf__locals
+disposition_parcelle->  raw/dvf/disp_parcelle.csv  -->  disposition_parcelle  -->  stg_dvf__parcelles
+parcelle           -->  raw/dvf/parcelle.csv       -->  parcelle              |
+adresse            -->  raw/dvf/adresse.csv        -->  adresse               |
+ann_* (5 tables)   -->  raw/dvf/ann_*.csv          -->  ann_* (5 tables)      |
+                                                                               |
+dept.geojson       -->  raw/geojson/dept-1000m...  -->  geo_departments       -->  stg_geo__departments
+communes.geojson   -->  raw/geojson/comm-1000m...  -->  geo_communes          -->  stg_geo__communes
+                                                                               |
+                                                                               v
+                                                                    int_transactions__enriched
+                                                                               |
+                                                                               v
+                                                                    fct_transactions (dvf_analytics)
+                                                                    dim_communes
+                                                                    dim_property_types
+                                                                    dim_dates
+                                                                    dim_geography
+                                                                               |
+                                                                               v
+                                                                    Looker Studio Dashboard
 ```
 
-The remaining stages (dbt transforms, dashboard, orchestration) are planned for Parts 5--7.
+Kestra orchestration (Part 7) will wrap all steps into a single end-to-end DAG.
 
 ## BigQuery Optimization
 
 Partitioning and clustering are applied at two layers:
 
-**Raw layer** (built in Part 4): The `dvf_raw.mutation` table uses **integer range partitioning** on `anneemut` (year, range 2014--2026) and **clustering** on `coddep` (department code) and `codtypbien` (property type code). This ensures that even exploratory queries on raw data benefit from partition pruning and block skipping.
+**Raw layer** (`dvf_raw.mutation`): Integer range partitioning on `anneemut` (year, range 2014--2026) and clustering on `coddep` (department code) and `codtypbien` (property type code). Applied at load time by `load_to_bigquery.py`.
 
-**Mart layer** (planned for Part 5): The `fct_transactions` fact table will use the same strategy with renamed columns: partition on `transaction_year`, cluster on `department_code` and `property_type_code`.
+**Mart layer** (`dvf_analytics.fct_transactions`): Integer range partitioning on `transaction_year` (2014--2026) and clustering on `department_code` and `property_type_code`. Applied by the dbt materialization config.
 
-This combination reduces bytes scanned by up to 95% for typical dashboard queries that filter by year and department.
+Both layers use the same strategy because the query patterns are consistent across raw exploration and dashboard queries. This combination reduces bytes scanned by up to 95% for typical dashboard queries that filter by year and department.
 
 For a detailed explanation with query examples and cost impact analysis, see [docs/PARTITIONING.md](docs/PARTITIONING.md). For the full technical architecture, see [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md).
 
@@ -213,7 +224,7 @@ This creates:
 
 ### 4. Run the ingestion pipeline (Parts 2--4)
 
-The end-to-end `make run` target is not yet wired (pending Parts 5--7). For now, run each step individually:
+The end-to-end `make run` target is not yet wired (pending Part 7 -- Kestra orchestration). For now, run each step individually:
 
 ```bash
 # Start the ephemeral PostgreSQL container
@@ -250,11 +261,34 @@ make bq-load
 
 For detailed step descriptions, dependencies, and error handling, see [docs/PIPELINE.md](docs/PIPELINE.md).
 
-### 5. View the dashboard
+### 5. Run dbt transformations (Part 5)
 
-Dashboard URL will be added after Part 6 implementation.
+```bash
+# Full dbt workflow: install packages, run all models, run all tests
+make dbt-build
+```
 
-Reviewers will be able to access the dashboard via a shareable Looker Studio link without running the full pipeline -- the dashboard will point to the production BigQuery dataset populated with the complete France data.
+This installs the `dbt_utils` package, runs 12 dbt models (6 staging views in `dvf_staging`, 1 intermediate view, 5 mart tables in `dvf_analytics`), and executes 62 data quality tests (unique, not_null, accepted_values, relationships, expression_is_true).
+
+Individual dbt targets are also available:
+
+```bash
+make dbt-deps    # Install dbt packages (dbt_utils)
+make dbt-run     # Run all dbt models
+make dbt-test    # Run all dbt tests
+```
+
+### 6. View the dashboard
+
+The Looker Studio dashboard connects directly to the `dvf_analytics` BigQuery dataset. Setup instructions are in [docs/DASHBOARD.md](docs/DASHBOARD.md).
+
+Reviewers can access the dashboard via a shareable Looker Studio link without running the full pipeline -- the dashboard points to the production BigQuery dataset populated with the complete France data.
+
+To validate that the dashboard tiles return correct data:
+
+```bash
+make dashboard-validate
+```
 
 ## Environment Variables
 
@@ -281,12 +315,12 @@ All configuration is managed through `.env` (see [.env.example](.env.example) fo
 
 ## Project Structure
 
-Files and directories marked with `(planned)` do not exist yet and will be created in future parts.
+Files and directories marked with `(pending)` do not exist yet and will be created in future parts.
 
 ```
 valeurs-foncieres-analytics/
-├── Makefile                     # Build targets: setup, terraform-*, docker-*, ingest-*, clean
-├── .env.example                 # Environment variables template (all 14 variables)
+├── Makefile                     # Build targets: setup, terraform-*, docker-*, ingest-*, dbt-*, clean
+├── .env.example                 # Environment variables template (16 variables)
 ├── docker-compose.yml           # PostgreSQL (ephemeral) + Kestra v0.21.1 + Kestra PostgreSQL
 ├── requirements.txt             # Python dependencies (GCS, BigQuery, dbt, psycopg2, py7zr, etc.)
 │
@@ -309,19 +343,30 @@ valeurs-foncieres-analytics/
 │   ├── upload_to_gcs.py         # Upload CSV + GeoJSON to GCS (raw/dvf/ and raw/geojson/)
 │   └── load_to_bigquery.py      # Load CSV + GeoJSON from GCS into BigQuery raw tables
 │
-├── kestra/                      # (planned) Kestra orchestration flows
-│   └── flows/
-│       └── dvf_pipeline.yml     # (planned) End-to-end DAG
+├── dbt_dvf/                     # dbt project (Part 5)
+│   ├── dbt_project.yml          # Project config: staging/intermediate as views, marts as tables
+│   ├── profiles.yml             # BigQuery connection (uses env vars for credentials)
+│   ├── packages.yml             # dbt_utils >= 1.1.0
+│   ├── macros/
+│   │   └── generate_schema_name.sql  # Custom schema routing (staging->dvf_staging, marts->dvf_analytics)
+│   └── models/
+│       ├── sources.yml          # Source definitions for all 13 dvf_raw BigQuery tables
+│       ├── staging/             # 6 views: stg_dvf__mutations, dispositions, locals, parcelles + 2 geo
+│       ├── intermediate/        # 1 view: int_transactions__enriched (joins 4 staging models)
+│       └── marts/               # 5 tables: fct_transactions, dim_communes, dim_property_types,
+│                                #           dim_dates, dim_geography (written to dvf_analytics)
 │
-├── dbt_dvf/                     # (planned) dbt project (Part 5)
-│   └── ...                      # Staging, intermediate, and mart models
+├── kestra/                      # (pending) Kestra orchestration flows (Part 7)
+│   └── flows/
+│       └── dvf_pipeline.yml     # (pending) End-to-end DAG
 │
 ├── docs/
 │   ├── BRIEF.md                 # Project requirements and scope
 │   ├── DATA_SOURCES.md          # DVF+ data reference (17 tables, columns, joins, quality rules)
 │   ├── ARCHITECTURE.md          # Technical architecture deep-dive
 │   ├── PIPELINE.md              # Pipeline documentation (steps, dependencies)
-│   └── PARTITIONING.md          # BigQuery partitioning/clustering rationale
+│   ├── PARTITIONING.md          # BigQuery partitioning/clustering rationale
+│   └── DASHBOARD.md             # Looker Studio tile specs, setup instructions, validation queries
 │
 └── tests/                       # Unit tests (not tracked in git)
     ├── test_download_dvf.py     # 34 tests: download, manual file handling, archive extraction
@@ -341,11 +386,11 @@ This project targets the maximum score of **28/28** across all 7 evaluation crit
 |---|-----------|--------|----------------|--------|
 | 1 | **Problem description** | 4/4 | Clearly described in this README: raw DVF+ dump transformed into an analytics-ready star schema | Done |
 | 2 | **Cloud** | 4/4 | GCP infrastructure provisioned with Terraform (GCS + BigQuery + service account + IAM) | Done |
-| 3 | **Data ingestion** | 4/4 | End-to-end DAG orchestrated with Kestra: download, restore, export, upload to GCS, load to BigQuery | In progress (all scripts built, Kestra DAG pending) |
-| 4 | **Data warehouse** | 4/4 | BigQuery with integer range partitioning (year) + clustering (department, property type) -- see [docs/PARTITIONING.md](docs/PARTITIONING.md) | Done (raw layer partitioned/clustered) |
-| 5 | **Transformations** | 4/4 | dbt-bigquery: multi-table staging, intermediate join, Kimball star schema marts | Planned (Part 5) |
-| 6 | **Dashboard** | 4/4 | Looker Studio with 2+ tiles: transaction count by property type, price evolution by year, price/m2 by department | Planned (Part 6) |
-| 7 | **Reproducibility** | 4/4 | Makefile + Docker + Terraform + `.env.example` + step-by-step README; `make setup && make terraform-apply && make run` | In progress |
+| 3 | **Data ingestion** | 4/4 | End-to-end pipeline: download, restore, export, upload to GCS, load to BigQuery (Kestra DAG pending) | In progress |
+| 4 | **Data warehouse** | 4/4 | BigQuery with integer range partitioning (year) + clustering (department, property type) at both raw and mart layers -- see [docs/PARTITIONING.md](docs/PARTITIONING.md) | Done |
+| 5 | **Transformations** | 4/4 | dbt-bigquery: 6 staging views, 1 intermediate join, 5 Kimball star schema mart tables, 62 data tests | Done |
+| 6 | **Dashboard** | 4/4 | Looker Studio with 2+ tiles: transaction count by property type, price evolution by year, price/m2 by department. See [docs/DASHBOARD.md](docs/DASHBOARD.md) | Done |
+| 7 | **Reproducibility** | 4/4 | Makefile + Docker + Terraform + `.env.example` + step-by-step README; `make setup && make terraform-apply && make run` | In progress (Kestra DAG pending) |
 
 ## Data Sources
 
@@ -396,9 +441,13 @@ make ingest-export      # Export PostgreSQL tables to CSV
 make ingest-geojson     # Download GeoJSON admin boundaries from Etalab
 make ingest-upload      # Upload CSV + GeoJSON to GCS
 make bq-load            # Load CSV + GeoJSON from GCS into BigQuery raw tables
-make run                # Run full pipeline (not yet wired -- placeholder)
-make dbt-run            # Run dbt transformations (not yet configured -- placeholder)
-make test               # Run all tests (uv run python -m pytest tests/ -v)
+make dbt-deps           # Install dbt packages (dbt_utils)
+make dbt-run            # Run all dbt models (staging + intermediate + marts)
+make dbt-test           # Run all dbt tests
+make dbt-build          # Full dbt workflow: deps + run + test
+make dashboard-validate # Validate dashboard data by running tile queries against BigQuery
+make run                # Run full pipeline (not yet wired -- placeholder for Kestra)
+make test               # Run all Python tests (uv run python -m pytest tests/ -v)
 make clean              # Tear down everything (containers + GCP resources)
 ```
 
