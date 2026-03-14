@@ -13,10 +13,8 @@ import shutil
 import sys
 from pathlib import Path
 
-import requests
-from tqdm import tqdm
-
-from ingestion.config import DATA_DIR, DOWNLOAD_CHUNK_SIZE, HTTP_CONNECT_TIMEOUT
+from ingestion.config import DATA_DIR, setup_logging
+from ingestion.http_utils import stream_download
 
 # ---------------------------------------------------------------------------
 # Constants
@@ -40,11 +38,8 @@ CEREMA_DOC_URL: str = (
 # Expected archive suffix.
 ARCHIVE_SUFFIX: str = ".7z"
 
-# HTTP read timeout in seconds (per chunk, generous for large files).
-HTTP_READ_TIMEOUT: int = 120
-
-# Backward-compatible alias (used as connect timeout).
-HTTP_TIMEOUT_SECONDS: int = HTTP_CONNECT_TIMEOUT
+# HTTP read timeout for large DVF archive downloads (seconds).
+DVF_READ_TIMEOUT: int = 120
 
 
 # ---------------------------------------------------------------------------
@@ -64,57 +59,12 @@ def _find_existing_archives(directory: Path) -> list[Path]:
     return sorted(directory.glob(f"*{ARCHIVE_SUFFIX}"))
 
 
-def _initiate_download(url: str) -> requests.Response | None:
-    """Open a streaming HTTP connection and return the response.
-
-    Returns None if the request fails.
-    """
-    try:
-        response = requests.get(
-            url,
-            stream=True,
-            timeout=(HTTP_CONNECT_TIMEOUT, HTTP_READ_TIMEOUT),
-            allow_redirects=True,
-        )
-        response.raise_for_status()
-    except requests.RequestException as exc:
-        logger.warning("Download from %s failed: %s", url, exc)
-        return None
-    return response
-
-
-def _stream_to_file(
-    response: requests.Response, destination: Path
-) -> None:
-    """Write streaming response content to *destination* with progress."""
-    total_size = int(response.headers.get("content-length", 0))
-    logger.info(
-        "Downloading (%s bytes) ...",
-        f"{total_size:,}" if total_size else "unknown size",
-    )
-    destination.parent.mkdir(parents=True, exist_ok=True)
-    with (
-        open(destination, "wb") as fh,
-        tqdm(
-            total=total_size, unit="B", unit_scale=True, desc=destination.name
-        ) as bar,
-    ):
-        for chunk in response.iter_content(chunk_size=DOWNLOAD_CHUNK_SIZE):
-            fh.write(chunk)
-            bar.update(len(chunk))
-    logger.info("Saved to %s", destination)
-
-
 def _download_with_progress(url: str, destination: Path) -> bool:
     """Stream-download a URL to *destination* with a tqdm progress bar.
 
     Returns True on success, False on failure.
     """
-    response = _initiate_download(url)
-    if response is None:
-        return False
-    _stream_to_file(response, destination)
-    return True
+    return stream_download(url, destination, read_timeout=DVF_READ_TIMEOUT)
 
 
 def _validate_archive_members(names: list[str]) -> None:
@@ -315,10 +265,7 @@ def _parse_args() -> argparse.Namespace:
 
 def main() -> None:
     """CLI entry point."""
-    logging.basicConfig(
-        level=logging.INFO,
-        format="%(asctime)s [%(levelname)s] %(name)s -- %(message)s",
-    )
+    setup_logging()
     args = _parse_args()
     manual = Path(args.file) if args.file else None
     sql_files = download_dvf(manual_file=manual)

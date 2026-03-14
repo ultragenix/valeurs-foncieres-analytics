@@ -7,12 +7,11 @@ for use in BigQuery geographic analysis and Looker Studio choropleth maps.
 import json
 import logging
 import sys
+
 from pathlib import Path
 
-import requests
-from tqdm import tqdm
-
-from ingestion.config import DATA_GEOJSON_DIR, DOWNLOAD_CHUNK_SIZE, HTTP_CONNECT_TIMEOUT
+from ingestion.config import DATA_GEOJSON_DIR, setup_logging
+from ingestion.http_utils import stream_download
 
 # ---------------------------------------------------------------------------
 # Constants
@@ -38,8 +37,8 @@ FEATURE_THRESHOLDS: dict[str, int] = {
     "communes-1000m.geojson": MIN_COMMUNE_FEATURES,
 }
 
-# HTTP read timeout in seconds (generous for large GeoJSON files).
-HTTP_READ_TIMEOUT: int = 300
+# HTTP read timeout for large GeoJSON files (seconds).
+GEOJSON_READ_TIMEOUT: int = 300
 
 
 # ---------------------------------------------------------------------------
@@ -58,38 +57,7 @@ def _download_file(url: str, destination: Path) -> bool:
 
     Returns True on success, False on failure.
     """
-    try:
-        response = requests.get(
-            url,
-            stream=True,
-            timeout=(HTTP_CONNECT_TIMEOUT, HTTP_READ_TIMEOUT),
-            allow_redirects=True,
-        )
-        response.raise_for_status()
-    except requests.RequestException as exc:
-        logger.error("Download failed for %s: %s", url, exc)
-        return False
-
-    _stream_to_file(response, destination)
-    return True
-
-
-def _stream_to_file(response: requests.Response, destination: Path) -> None:
-    """Write streaming response content to *destination* with progress."""
-    total_size = int(response.headers.get("content-length", 0))
-    destination.parent.mkdir(parents=True, exist_ok=True)
-
-    with (
-        open(destination, "wb") as fh,
-        tqdm(
-            total=total_size, unit="B", unit_scale=True, desc=destination.name
-        ) as bar,
-    ):
-        for chunk in response.iter_content(chunk_size=DOWNLOAD_CHUNK_SIZE):
-            fh.write(chunk)
-            bar.update(len(chunk))
-
-    logger.info("Saved %s (%s bytes)", destination.name, f"{destination.stat().st_size:,}")
+    return stream_download(url, destination, read_timeout=GEOJSON_READ_TIMEOUT)
 
 
 # ---------------------------------------------------------------------------
@@ -167,10 +135,7 @@ def _download_and_validate(
 # ---------------------------------------------------------------------------
 def main() -> None:
     """CLI entry point."""
-    logging.basicConfig(
-        level=logging.INFO,
-        format="%(asctime)s [%(levelname)s] %(name)s -- %(message)s",
-    )
+    setup_logging()
     paths = download_geojson()
     if not paths:
         logger.error("No GeoJSON files were downloaded successfully.")

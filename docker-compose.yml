@@ -25,13 +25,13 @@ services:
   kestra-postgres:
     image: postgres:16
     environment:
-      POSTGRES_USER: kestra
-      POSTGRES_PASSWORD: kestra_local_only
-      POSTGRES_DB: kestra
+      POSTGRES_USER: ${KESTRA_DB_USER:-kestra}
+      POSTGRES_PASSWORD: ${KESTRA_DB_PASSWORD:-kestra_local_only}
+      POSTGRES_DB: ${KESTRA_DB_NAME:-kestra}
     volumes:
       - kestra_pg_data:/var/lib/postgresql/data
     healthcheck:
-      test: ["CMD-SHELL", "pg_isready -U kestra -d kestra"]
+      test: ["CMD-SHELL", "pg_isready -U ${KESTRA_DB_USER:-kestra} -d ${KESTRA_DB_NAME:-kestra}"]
       interval: 5s
       timeout: 5s
       retries: 5
@@ -47,10 +47,10 @@ services:
       KESTRA_CONFIGURATION: |
         datasources:
           postgres:
-            url: jdbc:postgresql://kestra-postgres:5432/kestra
+            url: jdbc:postgresql://kestra-postgres:5432/${KESTRA_DB_NAME:-kestra}
             driverClassName: org.postgresql.Driver
-            username: kestra
-            password: kestra_local_only
+            username: ${KESTRA_DB_USER:-kestra}
+            password: ${KESTRA_DB_PASSWORD:-kestra_local_only}
     command: server standalone
     healthcheck:
       test: ["CMD-SHELL", "curl -f http://localhost:8080/api/v1/configs || exit 1"]

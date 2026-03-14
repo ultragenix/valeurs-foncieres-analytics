@@ -68,7 +68,7 @@ pipeline-local: ## Run full pipeline locally (sequential, no Kestra required)
 	$(MAKE) ingest-download
 	$(MAKE) docker-up
 	@echo "Waiting for PostgreSQL to be ready..."
-	@sleep 5
+	@docker compose exec postgres sh -c 'until pg_isready -U $${POSTGRES_USER:-dvf} -d $${POSTGRES_DB:-dvf}; do sleep 1; done'
 	$(MAKE) ingest-restore
 	$(MAKE) ingest-export
 	$(MAKE) ingest-geojson

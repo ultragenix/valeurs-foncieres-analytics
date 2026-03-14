@@ -6,6 +6,7 @@ and shared utility functions.
 
 from __future__ import annotations
 
+import logging
 import os
 from pathlib import Path
 from typing import Any
@@ -74,6 +75,36 @@ GCS_GEOJSON_PREFIX: str = "raw/geojson"
 DATA_DIR: Path = PROJECT_ROOT / "data"
 DATA_EXPORT_DIR: Path = DATA_DIR / "export"
 DATA_GEOJSON_DIR: Path = DATA_DIR / "geojson"
+
+
+# ---------------------------------------------------------------------------
+# DVF table metadata
+# ---------------------------------------------------------------------------
+# Tables that have a coddep column (for demo-mode filtering).
+TABLES_WITH_CODDEP: list[str] = [
+    "mutation",
+    "disposition",
+    "disposition_parcelle",
+    "local",
+    "parcelle",
+    "adresse",
+    "suf",
+    "lot",
+    "volume",
+    "mutation_article_cgi",
+    "adresse_dispoparc",
+    "adresse_local",
+]
+
+# ---------------------------------------------------------------------------
+# Logging
+# ---------------------------------------------------------------------------
+LOG_FORMAT: str = "%(asctime)s [%(levelname)s] %(name)s -- %(message)s"
+
+
+def setup_logging(level: int = logging.INFO) -> None:
+    """Configure logging with a consistent format across all modules."""
+    logging.basicConfig(level=level, format=LOG_FORMAT)
 
 
 # ---------------------------------------------------------------------------

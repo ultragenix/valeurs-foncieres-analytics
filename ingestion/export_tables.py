@@ -18,7 +18,9 @@ from ingestion.config import (
     DATA_EXPORT_DIR,
     DVF_DEMO_DEPARTMENTS,
     DVF_MODE,
+    TABLES_WITH_CODDEP,
     get_pg_connection,
+    setup_logging,
 )
 
 # ---------------------------------------------------------------------------
@@ -39,16 +41,6 @@ SIMPLE_TABLES: list[str] = [
     "ann_nature_culture_speciale",
 ]
 
-# Tables that have a coddep column (for demo-mode WHERE clause).
-TABLES_WITH_CODDEP: list[str] = [
-    "mutation",
-    "disposition",
-    "local",
-    "disposition_parcelle",
-    "parcelle",
-    "adresse",
-]
-
 # Geometry columns to exclude from parcelle export.
 PARCELLE_EXCLUDE_COLUMNS: list[str] = ["geompar", "geomparmut"]
 
@@ -61,14 +53,6 @@ ALL_EXPORT_TABLES: list[str] = [
     "parcelle",
     *SIMPLE_TABLES,
 ]
-
-
-# ---------------------------------------------------------------------------
-# Connection
-# ---------------------------------------------------------------------------
-def _get_connection() -> psycopg2.extensions.connection:
-    """Open a psycopg2 connection to the DVF database."""
-    return get_pg_connection()
 
 
 # ---------------------------------------------------------------------------
@@ -256,7 +240,7 @@ def export_tables() -> None:
     departments = _resolve_departments()
     DATA_EXPORT_DIR.mkdir(parents=True, exist_ok=True)
 
-    conn = _get_connection()
+    conn = get_pg_connection()
     try:
         _export_all_tables(conn, departments)
     finally:
@@ -300,10 +284,7 @@ def _export_single_table(
 # ---------------------------------------------------------------------------
 def main() -> None:
     """CLI entry point."""
-    logging.basicConfig(
-        level=logging.INFO,
-        format="%(asctime)s [%(levelname)s] %(name)s -- %(message)s",
-    )
+    setup_logging()
     try:
         export_tables()
     except psycopg2.OperationalError as exc:

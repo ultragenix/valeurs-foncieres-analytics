@@ -9,6 +9,7 @@ stored as a JSON string (converted to GEOGRAPHY in the dbt layer).
 
 from __future__ import annotations
 
+import datetime
 import json
 import logging
 import sys
@@ -22,6 +23,7 @@ from ingestion.config import (
     GCS_DVF_PREFIX,
     GCS_GEOJSON_PREFIX,
     get_gcs_client,
+    setup_logging,
 )
 
 # ---------------------------------------------------------------------------
@@ -32,7 +34,7 @@ logger = logging.getLogger(__name__)
 MUTATION_TABLE: str = "mutation"
 PARTITION_FIELD: str = "anneemut"
 PARTITION_START: int = 2014
-PARTITION_END: int = 2026
+PARTITION_END: int = datetime.datetime.now(tz=datetime.timezone.utc).year + 1
 PARTITION_INTERVAL: int = 1
 CLUSTERING_FIELDS: list[str] = ["coddep", "codtypbien"]
 
@@ -119,11 +121,6 @@ def _get_bq_client() -> Any:
     from google.cloud import bigquery  # noqa: WPS433
 
     return bigquery.Client(project=GCP_PROJECT_ID)
-
-
-def _get_gcs_client() -> Any:
-    """Create and return a GCS storage client."""
-    return get_gcs_client()
 
 
 # ---------------------------------------------------------------------------
@@ -274,7 +271,7 @@ def load_to_bigquery() -> int:
     if not _validate_config():
         return 0
 
-    gcs_client = _get_gcs_client()
+    gcs_client = get_gcs_client()
     bq_client = _get_bq_client()
     csv_blobs, geojson_blobs = _discover_blobs(gcs_client)
 
@@ -293,10 +290,7 @@ def load_to_bigquery() -> int:
 # ---------------------------------------------------------------------------
 def main() -> None:
     """CLI entry point."""
-    logging.basicConfig(
-        level=logging.INFO,
-        format="%(asctime)s [%(levelname)s] %(name)s -- %(message)s",
-    )
+    setup_logging()
     count = load_to_bigquery()
     if count == 0:
         logger.error("No data was loaded into BigQuery.")

@@ -20,12 +20,15 @@ from ingestion.config import (
     GCS_DVF_PREFIX,
     GCS_GEOJSON_PREFIX,
     get_gcs_client,
+    setup_logging,
 )
 
 # ---------------------------------------------------------------------------
 # Constants
 # ---------------------------------------------------------------------------
 logger = logging.getLogger(__name__)
+
+BYTES_PER_MB: int = 1_048_576
 
 
 # ---------------------------------------------------------------------------
@@ -62,16 +65,11 @@ def _collect_files() -> tuple[list[Path], list[Path]]:
 # ---------------------------------------------------------------------------
 # Upload
 # ---------------------------------------------------------------------------
-def _get_gcs_client() -> Any:
-    """Create and return a GCS storage client."""
-    return get_gcs_client()
-
-
 def _upload_file(bucket: Any, local_path: Path, gcs_path: str) -> None:
     """Upload a single file to GCS and log its size."""
     blob = bucket.blob(gcs_path)
     blob.upload_from_filename(str(local_path))
-    size_mb = local_path.stat().st_size / (1024 * 1024)
+    size_mb = local_path.stat().st_size / BYTES_PER_MB
     logger.info(
         "Uploaded %s -> gs://%s/%s (%.1f MB)",
         local_path.name,
@@ -127,7 +125,7 @@ def upload_to_gcs() -> int:
         logger.warning("No files to upload.")
         return 0
 
-    client = _get_gcs_client()
+    client = get_gcs_client()
     bucket = client.bucket(GCS_BUCKET_NAME)
     uploaded = _upload_all(bucket, csv_files, geojson_files, total_files)
 
@@ -163,10 +161,7 @@ def _upload_all(
 # ---------------------------------------------------------------------------
 def main() -> None:
     """CLI entry point."""
-    logging.basicConfig(
-        level=logging.INFO,
-        format="%(asctime)s [%(levelname)s] %(name)s -- %(message)s",
-    )
+    setup_logging()
     count = upload_to_gcs()
     if count == 0:
         logger.error("No files were uploaded.")

@@ -21,7 +21,9 @@ from ingestion.config import (
     POSTGRES_PASSWORD,
     POSTGRES_PORT,
     POSTGRES_USER,
+    TABLES_WITH_CODDEP,
     get_pg_connection,
+    setup_logging,
 )
 
 # ---------------------------------------------------------------------------
@@ -59,22 +61,6 @@ EXPECTED_ANNEXE_TABLES: list[str] = [
 ALL_EXPECTED_TABLES: list[str] = (
     EXPECTED_PRINCIPAL_TABLES + EXPECTED_SECONDARY_TABLES + EXPECTED_ANNEXE_TABLES
 )
-
-# Tables that have a coddep column (for demo-mode filtering).
-TABLES_WITH_CODDEP: list[str] = [
-    "mutation",
-    "disposition",
-    "disposition_parcelle",
-    "local",
-    "parcelle",
-    "adresse",
-    "suf",
-    "lot",
-    "volume",
-    "mutation_article_cgi",
-    "adresse_dispoparc",
-    "adresse_local",
-]
 
 # psql command timeout (10 minutes for large restores).
 PSQL_TIMEOUT_SECONDS: int = 600
@@ -133,11 +119,6 @@ def _run_psql_file(sql_file: Path) -> int:
     else:
         logger.info("psql completed successfully for %s", sql_file.name)
     return result.returncode
-
-
-def _get_connection() -> psycopg2.extensions.connection:
-    """Open a psycopg2 connection to the DVF database."""
-    return get_pg_connection()
 
 
 def _ensure_postgis(conn: psycopg2.extensions.connection) -> None:
@@ -327,7 +308,7 @@ def _get_sql_files_or_exit() -> list[Path]:
 
 def _prepare_database() -> None:
     """Ensure PostGIS extension is available before restoring."""
-    conn = _get_connection()
+    conn = get_pg_connection()
     try:
         _ensure_postgis(conn)
     finally:
@@ -341,7 +322,7 @@ def _restore_and_verify(sql_files: list[Path]) -> None:
         logger.error("All SQL restores returned non-zero exit codes.")
         sys.exit(1)
 
-    conn = _get_connection()
+    conn = get_pg_connection()
     try:
         success = _post_restore_processing(conn)
     finally:
@@ -365,10 +346,7 @@ def restore_dump() -> None:
 # ---------------------------------------------------------------------------
 def main() -> None:
     """CLI entry point."""
-    logging.basicConfig(
-        level=logging.INFO,
-        format="%(asctime)s [%(levelname)s] %(name)s -- %(message)s",
-    )
+    setup_logging()
     restore_dump()
 
 
