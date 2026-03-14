@@ -61,7 +61,7 @@ The Cerema dictionary documents **DV3F** (enriched version). DVF+ open-data is a
 | Publisher | Etalab / IGN (via data.gouv.fr) | ✅ |
 | Content | Polygon boundaries for all ~35,000 communes and 101 departments in France (metro + DOM) | ✅ |
 | Format | GeoJSON (multiple generalization levels) | ✅ |
-| Download URL (communes) | https://etalab-datasets.geo.data.gouv.fr/contours-administratifs/2023/geojson/ | ✅ |
+| Download URL (communes) | https://etalab-datasets.geo.data.gouv.fr/contours-administratifs/2024/geojson/ | ✅ |
 | Alternative (GitHub) | https://github.com/gregoiredavid/france-geojson | ✅ |
 | Recommended file | `communes-1000m.geojson` (~10 MB, 1km generalization — fast + good enough for dashboard) | ⚠️ |
 | Department file | `departements-1000m.geojson` (~340 KB) | ✅ |

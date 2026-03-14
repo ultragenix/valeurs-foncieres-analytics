@@ -2,6 +2,8 @@
 
 End-to-end data pipeline for French real estate transaction analytics using the DVF+ dataset (20M+ transactions, 2014--2025).
 
+**Current status:** Parts 1--3 validated (infrastructure, ingestion, export to GCS). See [STATE.md](STATE.md) for detailed progress.
+
 ## Problem Statement
 
 France publishes one of the most comprehensive open real estate transaction datasets in the world: **DVF+** (Demandes de Valeurs Foncieres), maintained by [Cerema](https://www.cerema.fr/). It covers every notarized property sale since January 2014 -- over 20 million transactions across 17 relational tables. The data includes transaction prices, property types, land and built areas, locations, and cadastral references for the entire country (metropolitan France and overseas territories).
@@ -12,40 +14,39 @@ This project builds a **cloud-native analytics pipeline on GCP** that ingests th
 
 ## Architecture
 
+The diagram below shows the full target architecture. Components marked with `[BUILT]` are implemented and validated; others are planned for upcoming parts.
+
 ```
                                 LOCAL MACHINE (Docker)
                                 +--------------------------+
                                 |  PostgreSQL 16 + PostGIS |
 CEREMA BOX                      |  (ephemeral container)   |
 +-----------+   download_dvf.py |                          |
-| DVF+ SQL  | -----(curl)-----> |  pg_restore --> tables   |
-| dump      |                   |  COPY TO --> CSV files   |
+| DVF+ SQL  | -----(HTTP)-----> |  restore_dump.py         |  [BUILT]
+| dump (.7z)|                   |  export_tables.py -> CSV |  [BUILT]
 +-----------+                   +------------+-------------+
                                              |
-                                upload_to_gcs.py
+                                upload_to_gcs.py                  [BUILT]
                                              |
                                              v
                                 GCP (europe-west9)
                                 +-----------------------------------+
 ETALAB / IGN                    |                                   |
-+------------+  download_geojson|  GCS Bucket (data lake)           |
++------------+  download_geojson|  GCS Bucket (data lake)           |  [BUILT]
 | GeoJSON    | -(python)------> |  gs://...-dvf-data-lake/          |
-| dept/comm  |                  |    raw/mutations/*.csv            |
-+------------+                  |    raw/dispositions/*.csv         |
-                                |    raw/locals/*.csv               |
-                                |    raw/parcelles/*.csv            |
-                                |    raw/geojson/*.geojson          |
+| dept/comm  |                  |    raw/dvf/*.csv                  |
++------------+                  |    raw/geojson/*.geojson          |
                                 +----------------+------------------+
                                                  |
-                                load_to_bigquery.py
+                                load_to_bigquery.py (Part 4)
                                                  |
                                                  v
                                 +-----------------------------------+
                                 |  BigQuery                         |
-                                |                                   |
-                                |  dvf_raw       (raw tables)       |
-                                |  dvf_staging   (dbt views)        |
-                                |  dvf_analytics (dbt marts)        |
+                                |                                   |  [BUILT: datasets provisioned]
+                                |  dvf_raw       (raw tables)       |  (Part 4: loading)
+                                |  dvf_staging   (dbt views)        |  (Part 5: dbt)
+                                |  dvf_analytics (dbt marts)        |  (Part 5: dbt)
                                 |    fct_transactions               |
                                 |      partitioned: year            |
                                 |      clustered: dept, type        |
@@ -55,7 +56,7 @@ ETALAB / IGN                    |                                   |
                                 |    dim_geography                  |
                                 +----------------+------------------+
                                                  |
-                                      Looker Studio (connector)
+                                      Looker Studio (Part 6)
                                                  |
                                                  v
                                 +-----------------------------------+
@@ -65,7 +66,7 @@ ETALAB / IGN                    |                                   |
                                 |    Tile 3: price/m2 by dept      |
                                 +-----------------------------------+
 
-ORCHESTRATION: Kestra DAG ties all steps into a single end-to-end pipeline
+ORCHESTRATION: Kestra DAG (Part 7) ties all steps into a single end-to-end pipeline
 ```
 
 ## Tech Stack
@@ -84,9 +85,9 @@ ORCHESTRATION: Kestra DAG ties all steps into a single end-to-end pipeline
 | Package Manager | uv | Fast Python dependency management |
 | Temporary Database | PostgreSQL 16 + PostGIS 3.4 | Restore DVF+ SQL dump, export tables to CSV |
 
-## Data Model
+## Data Model (Target)
 
-The project implements a **Kimball star schema** in BigQuery with one fact table and four dimension tables:
+The project will implement a **Kimball star schema** in BigQuery with one fact table and four dimension tables (Part 5 -- dbt transformations):
 
 ```
                     +-------------------+
@@ -116,23 +117,30 @@ The project implements a **Kimball star schema** in BigQuery with one fact table
 
 **`dim_geography`** -- Geographic boundaries from GeoJSON (departments and communes) with names, region codes, and geometry for map visualizations.
 
-### Transformation Lineage
+### Data Flow (current state)
+
+The following stages are implemented and validated (Parts 1--3):
 
 ```
-PostgreSQL (temp)       GCS (raw CSV)        BigQuery raw          dbt staging              dbt intermediate        dbt marts
------------------       -------------        ------------          -----------              ----------------        ---------
-mutation           -->  mutations.csv   -->  dvf_raw.mutation -->  stg_dvf__mutations   -+
-disposition        -->  dispositions.csv-->  dvf_raw.disposition-> stg_dvf__dispositions |
-local              -->  locals.csv      -->  dvf_raw.local    -->  stg_dvf__locals      +-> int_transactions  -->  fct_transactions
-disposition_parcelle->  parcelles.csv   -->  dvf_raw.parcelle -->  stg_dvf__parcelles   |     __enriched          dim_communes
-                                                                                        |                         dim_property_types
-dept.geojson       -->  geojson/        -->  dvf_raw.geo_dept -->  stg_geo__departments -+                         dim_dates
-communes.geojson   -->  geojson/        -->  dvf_raw.geo_comm -->  stg_geo__communes    +---------------------->  dim_geography
+PostgreSQL (temp)       GCS (raw CSV)
+-----------------       ---------------
+mutation           -->  raw/dvf/mutation.csv
+disposition        -->  raw/dvf/disposition.csv
+local              -->  raw/dvf/local.csv
+disposition_parcelle->  raw/dvf/disposition_parcelle.csv
+parcelle           -->  raw/dvf/parcelle.csv
+adresse            -->  raw/dvf/adresse.csv
+ann_* (5 tables)   -->  raw/dvf/ann_*.csv
+
+dept.geojson       -->  raw/geojson/departements-1000m.geojson
+communes.geojson   -->  raw/geojson/communes-1000m.geojson
 ```
 
-## BigQuery Optimization
+The remaining stages (BigQuery loading, dbt transforms, dashboard) are planned for Parts 4--6.
 
-The fact table `fct_transactions` uses **integer range partitioning** on `transaction_year` and **clustering** on `department_code` and `property_type_code`. This combination reduces bytes scanned by up to 95% for typical dashboard queries that filter by year and department.
+## BigQuery Optimization (planned)
+
+The fact table `fct_transactions` will use **integer range partitioning** on `transaction_year` and **clustering** on `department_code` and `property_type_code`. This combination reduces bytes scanned by up to 95% for typical dashboard queries that filter by year and department.
 
 For a detailed explanation with query examples and cost impact analysis, see [docs/PARTITIONING.md](docs/PARTITIONING.md).
 
@@ -194,13 +202,32 @@ This creates:
 - Three BigQuery datasets (`dvf_raw`, `dvf_staging`, `dvf_analytics`)
 - A service account with Storage Object Admin and BigQuery Data Editor/Job User roles
 
-### 4. Run the pipeline
+### 4. Run the ingestion pipeline (Parts 2--3)
+
+The end-to-end `make run` target is not yet wired (pending Parts 4--7). For now, run each step individually:
 
 ```bash
-make run
-```
+# Start the ephemeral PostgreSQL container
+make docker-up
 
-This triggers the end-to-end pipeline: download DVF+ dump from Cerema, restore into an ephemeral PostgreSQL container, export tables to CSV, upload to GCS, load into BigQuery raw tables, and run dbt transformations.
+# Download the DVF+ SQL dump from Cerema (~4-5 GB for full, smaller for demo)
+make ingest-download
+
+# Restore the SQL dump into PostgreSQL
+make ingest-restore
+
+# Export PostgreSQL tables to CSV files (data/export/)
+make ingest-export
+
+# Download GeoJSON admin boundaries from Etalab (data/geojson/)
+make ingest-geojson
+
+# Upload CSV + GeoJSON files to GCS
+make ingest-upload
+
+# Stop and remove the ephemeral PostgreSQL container
+make docker-down
+```
 
 **Pipeline modes** (set `DVF_MODE` in `.env`):
 
@@ -211,9 +238,9 @@ This triggers the end-to-end pipeline: download DVF+ dump from Cerema, restore i
 
 ### 5. View the dashboard
 
-Dashboard URL will be added after implementation.
+Dashboard URL will be added after Part 6 implementation.
 
-Reviewers can access the dashboard via a shareable Looker Studio link without running the full pipeline -- the dashboard points to the production BigQuery dataset populated with the complete France data.
+Reviewers will be able to access the dashboard via a shareable Looker Studio link without running the full pipeline -- the dashboard will point to the production BigQuery dataset populated with the complete France data.
 
 ## Environment Variables
 
@@ -231,6 +258,7 @@ All configuration is managed through `.env` (see [.env.example](.env.example) fo
 | `POSTGRES_USER` | Ephemeral PostgreSQL user | `dvf` |
 | `POSTGRES_PASSWORD` | Ephemeral PostgreSQL password | `dvf_local_only` |
 | `POSTGRES_DB` | Ephemeral PostgreSQL database | `dvf` |
+| `POSTGRES_HOST` | Ephemeral PostgreSQL host | `localhost` |
 | `POSTGRES_PORT` | Ephemeral PostgreSQL port | `5432` |
 | `DVF_MODE` | Pipeline mode: `demo` or `full` | `demo` |
 | `DVF_DEMO_DEPARTMENTS` | Departments for demo mode | `75,13` |
@@ -239,12 +267,14 @@ All configuration is managed through `.env` (see [.env.example](.env.example) fo
 
 ## Project Structure
 
+Files and directories marked with `(planned)` do not exist yet and will be created in future parts.
+
 ```
 valeurs-foncieres-analytics/
-├── Makefile                     # Build targets: setup, terraform-*, docker-*, run, clean
-├── .env.example                 # Environment variables template
-├── docker-compose.yml           # PostgreSQL (ephemeral) + Kestra + Kestra PostgreSQL
-├── requirements.txt             # Python dependencies (GCS, BigQuery, dbt, psycopg2, etc.)
+├── Makefile                     # Build targets: setup, terraform-*, docker-*, ingest-*, clean
+├── .env.example                 # Environment variables template (all 14 variables)
+├── docker-compose.yml           # PostgreSQL (ephemeral) + Kestra v0.21.1 + Kestra PostgreSQL
+├── requirements.txt             # Python dependencies (GCS, BigQuery, dbt, psycopg2, py7zr, etc.)
 │
 ├── terraform/
 │   ├── main.tf                  # GCS bucket + BigQuery datasets + service account + IAM
@@ -255,64 +285,50 @@ valeurs-foncieres-analytics/
 │   └── postgres/
 │       └── Dockerfile           # PostgreSQL 16 + PostGIS 3.4 (auto-enables PostGIS extension)
 │
-├── ingestion/                   # Python scripts for data loading (Parts 2-4)
-│   ├── download_dvf.py          # Download DVF+ SQL dump from Cerema Box
-│   ├── restore_dump.py          # pg_restore into ephemeral PostgreSQL container
-│   ├── export_tables.py         # COPY tables to CSV (geometry + array handling)
-│   ├── upload_to_gcs.py         # Upload CSV/GeoJSON to GCS
-│   ├── load_to_bigquery.py      # Load from GCS into BigQuery raw tables
-│   └── download_geojson.py      # Download admin boundaries GeoJSON from Etalab/IGN
+├── ingestion/                   # Python ingestion package (Parts 2-4)
+│   ├── __init__.py              # Package marker
+│   ├── config.py                # Shared configuration (loads .env, exposes typed constants)
+│   ├── download_dvf.py          # Download DVF+ SQL dump from Cerema (auto or manual .7z/.sql)
+│   ├── restore_dump.py          # Execute SQL files via psql, verify tables, demo filtering
+│   ├── export_tables.py         # COPY tables to CSV (geometry->lat/lon, array->scalar handling)
+│   ├── download_geojson.py      # Download admin boundary GeoJSON from Etalab (dept + communes)
+│   ├── upload_to_gcs.py         # Upload CSV + GeoJSON to GCS (raw/dvf/ and raw/geojson/)
+│   └── load_to_bigquery.py      # (planned) Load from GCS into BigQuery raw tables
 │
-├── kestra/
+├── kestra/                      # (planned) Kestra orchestration flows
 │   └── flows/
-│       └── dvf_pipeline.yml     # End-to-end DAG: download -> restore -> export -> GCS -> BQ -> dbt
+│       └── dvf_pipeline.yml     # (planned) End-to-end DAG
 │
-├── dbt_dvf/                     # dbt project (Part 5)
-│   ├── dbt_project.yml
-│   ├── profiles.yml             # BigQuery connection (uses env vars)
-│   ├── packages.yml
-│   ├── models/
-│   │   ├── sources.yml
-│   │   ├── staging/             # Clean individual source tables
-│   │   │   ├── stg_dvf__mutations.sql
-│   │   │   ├── stg_dvf__dispositions.sql
-│   │   │   ├── stg_dvf__locals.sql
-│   │   │   ├── stg_dvf__parcelles.sql
-│   │   │   ├── stg_geo__departments.sql
-│   │   │   └── stg_geo__communes.sql
-│   │   ├── intermediate/        # Multi-table joins
-│   │   │   └── int_transactions__enriched.sql
-│   │   └── marts/               # Kimball star schema
-│   │       ├── fct_transactions.sql
-│   │       ├── dim_communes.sql
-│   │       ├── dim_property_types.sql
-│   │       ├── dim_dates.sql
-│   │       └── dim_geography.sql
-│   ├── seeds/
-│   ├── tests/
-│   └── macros/
+├── dbt_dvf/                     # (planned) dbt project (Part 5)
+│   └── ...                      # Staging, intermediate, and mart models
 │
 ├── docs/
 │   ├── BRIEF.md                 # Project requirements and scope
-│   ├── DATA_SOURCES.md          # DVF+ data reference (tables, columns, joins)
+│   ├── DATA_SOURCES.md          # DVF+ data reference (17 tables, columns, joins, quality rules)
 │   └── PARTITIONING.md          # BigQuery partitioning/clustering rationale
 │
-└── tests/                       # Python integration tests
+└── tests/                       # Unit tests (not tracked in git)
+    ├── test_download_dvf.py     # 34 tests: download, manual file handling, archive extraction
+    ├── test_restore_dump.py     # 36 tests: psql execution, demo filtering, verification
+    ├── test_export_tables.py    # CSV export, query building, geometry/array handling
+    ├── test_download_geojson.py # GeoJSON download, validation, skip logic
+    ├── test_upload_to_gcs.py    # GCS upload, file collection, bucket validation
+    └── qa/                      # Independent QA audit tests
 ```
 
 ## Zoomcamp Evaluation Criteria
 
 This project targets the maximum score of **28/28** across all 7 evaluation criteria for the [DataTalksClub Data Engineering Zoomcamp](https://github.com/DataTalksClub/data-engineering-zoomcamp) final project:
 
-| # | Criterion | Points | Implementation |
-|---|-----------|--------|----------------|
-| 1 | **Problem description** | 4/4 | Clearly described in this README: raw DVF+ dump transformed into an analytics-ready star schema |
-| 2 | **Cloud** | 4/4 | GCP infrastructure provisioned with Terraform (GCS + BigQuery + service account + IAM) |
-| 3 | **Data ingestion** | 4/4 | End-to-end DAG orchestrated with Kestra: download, restore, export, upload to GCS, load to BigQuery |
-| 4 | **Data warehouse** | 4/4 | BigQuery with integer range partitioning (year) + clustering (department, property type) -- see [docs/PARTITIONING.md](docs/PARTITIONING.md) |
-| 5 | **Transformations** | 4/4 | dbt-bigquery: multi-table staging, intermediate join, Kimball star schema marts |
-| 6 | **Dashboard** | 4/4 | Looker Studio with 2+ tiles: transaction count by property type, price evolution by year, price/m2 by department |
-| 7 | **Reproducibility** | 4/4 | Makefile + Docker + Terraform + `.env.example` + step-by-step README; `make setup && make terraform-apply && make run` |
+| # | Criterion | Points | Implementation | Status |
+|---|-----------|--------|----------------|--------|
+| 1 | **Problem description** | 4/4 | Clearly described in this README: raw DVF+ dump transformed into an analytics-ready star schema | Done |
+| 2 | **Cloud** | 4/4 | GCP infrastructure provisioned with Terraform (GCS + BigQuery + service account + IAM) | Done |
+| 3 | **Data ingestion** | 4/4 | End-to-end DAG orchestrated with Kestra: download, restore, export, upload to GCS, load to BigQuery | In progress (scripts built, Kestra DAG pending) |
+| 4 | **Data warehouse** | 4/4 | BigQuery with integer range partitioning (year) + clustering (department, property type) -- see [docs/PARTITIONING.md](docs/PARTITIONING.md) | Planned (Part 4) |
+| 5 | **Transformations** | 4/4 | dbt-bigquery: multi-table staging, intermediate join, Kimball star schema marts | Planned (Part 5) |
+| 6 | **Dashboard** | 4/4 | Looker Studio with 2+ tiles: transaction count by property type, price evolution by year, price/m2 by department | Planned (Part 6) |
+| 7 | **Reproducibility** | 4/4 | Makefile + Docker + Terraform + `.env.example` + step-by-step README; `make setup && make terraform-apply && make run` | In progress |
 
 ## Data Sources
 
@@ -323,11 +339,13 @@ This project targets the maximum score of **28/28** across all 7 evaluation crit
 | Publisher | [Cerema](https://www.cerema.fr/) (DGALN) |
 | Content | All notarized real estate transactions in France |
 | Period | January 2014 -- June 2025 |
-| Volume | ~20M+ transactions across 17 relational tables |
-| Format | PostgreSQL/PostGIS SQL dump (~4--5 GB) |
+| Volume | ~20M+ transactions across 17 relational tables (12 main + 5 annexe) |
+| Format | PostgreSQL/PostGIS SQL dump (~4--5 GB, distributed as .7z archive) |
 | Download | [cerema.app.box.com/v/dvfplus-opendata](https://cerema.app.box.com/v/dvfplus-opendata) |
 | License | [Licence Ouverte v2.0](https://www.etalab.gouv.fr/licence-ouverte-open-licence/) (free reuse) |
 | Documentation | [doc-datafoncier.cerema.fr/doc/dv3f/](https://doc-datafoncier.cerema.fr/doc/dv3f/) |
+
+The ingestion pipeline exports 11 tables to CSV: 6 principal/secondary tables (`mutation`, `disposition`, `local`, `disposition_parcelle`, `parcelle`, `adresse`) and 5 annexe reference tables (`ann_nature_mutation`, `ann_type_local`, `ann_cgi`, `ann_nature_culture`, `ann_nature_culture_speciale`). Geometry columns (PostGIS points) are extracted as latitude/longitude floats; heavy polygon geometries are dropped. Array columns are reduced to their first element.
 
 For a complete reference of all 17 tables, columns, join keys, and data quality rules, see [docs/DATA_SOURCES.md](docs/DATA_SOURCES.md).
 
@@ -338,26 +356,39 @@ For a complete reference of all 17 tables, columns, join keys, and data quality 
 | Publisher | [Etalab](https://www.etalab.gouv.fr/) / [IGN](https://www.ign.fr/) |
 | Content | GeoJSON polygons for all ~35,000 communes and 101 departments |
 | Format | GeoJSON (1km generalization) |
-| Download | [etalab-datasets.geo.data.gouv.fr](https://etalab-datasets.geo.data.gouv.fr/contours-administratifs/2023/geojson/) |
+| Download | [etalab-datasets.geo.data.gouv.fr](https://etalab-datasets.geo.data.gouv.fr/contours-administratifs/2024/geojson/) |
 | License | Licence Ouverte v2.0 (IGN Admin Express) |
+
+The pipeline downloads `departements-1000m.geojson` (~340 KB, 101 departments) and `communes-1000m.geojson` (~10 MB, ~35,000 communes) and uploads them to GCS for use in BigQuery geographic analysis and Looker Studio choropleth maps.
 
 ## Makefile Targets
 
 ```bash
 make help               # Show all available targets
-make setup              # Copy .env, install Python deps, terraform init
+make setup              # Copy .env, install Python deps (uv), terraform init
 make terraform-init     # Initialize Terraform providers
 make terraform-plan     # Preview Terraform changes
 make terraform-apply    # Provision GCP resources (GCS + BigQuery + SA)
 make terraform-destroy  # Destroy all Terraform-managed GCP resources
 make docker-up          # Start ephemeral PostgreSQL container
 make docker-down        # Stop and remove all containers
-make docker-up-kestra   # Start Kestra orchestrator
-make run                # Run full pipeline (end-to-end)
-make dbt-run            # Run dbt transformations
-make test               # Run all tests
+make docker-up-kestra   # Start Kestra orchestrator (+ its internal PostgreSQL)
+make ingest-download    # Download DVF+ SQL dump from Cerema
+make ingest-restore     # Restore DVF+ SQL dump into PostgreSQL container
+make ingest-export      # Export PostgreSQL tables to CSV
+make ingest-geojson     # Download GeoJSON admin boundaries from Etalab
+make ingest-upload      # Upload CSV + GeoJSON to GCS
+make run                # Run full pipeline (not yet wired -- placeholder)
+make dbt-run            # Run dbt transformations (not yet configured -- placeholder)
+make test               # Run all tests (not yet wired -- placeholder)
 make clean              # Tear down everything (containers + GCP resources)
 ```
+
+## Acknowledgments
+
+- **[Cerema](https://www.cerema.fr/)** for the DVF+ open data (Licence Ouverte v2.0)
+- **[Etalab](https://www.etalab.gouv.fr/) / [IGN](https://www.ign.fr/)** for the administrative boundary GeoJSON files (Licence Ouverte v2.0)
+- **[DataTalksClub](https://github.com/DataTalksClub/data-engineering-zoomcamp)** for the Data Engineering Zoomcamp course and project framework
 
 ## License
 
