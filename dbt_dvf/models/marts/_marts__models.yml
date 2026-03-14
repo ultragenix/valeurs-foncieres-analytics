@@ -1,0 +1,165 @@
+version: 2
+
+models:
+  - name: fct_transactions
+    description: >
+      Fact table for real estate transactions. One row per mutation.
+      Partitioned by transaction_year (integer range 2014-2025),
+      clustered by department_code and property_type_code.
+      Written to dvf_analytics dataset.
+    columns:
+      - name: transaction_id
+        description: Business key (from idopendata)
+        tests:
+          - unique
+          - not_null
+      - name: mutation_id
+        description: Technical key (from idmutation)
+        tests:
+          - unique
+          - not_null
+      - name: transaction_date
+        description: Transaction date
+      - name: transaction_year
+        description: Transaction year (partition key)
+        tests:
+          - not_null
+      - name: transaction_month
+        description: Transaction month (1-12)
+      - name: department_code
+        description: Department code (cluster key 1)
+        tests:
+          - not_null
+      - name: commune_code
+        description: INSEE commune code
+      - name: property_type_code
+        description: GnDVF property type code (cluster key 2)
+      - name: property_type_label
+        description: Property type label
+      - name: transaction_price_eur
+        description: Transaction price in EUR (always > 0)
+        tests:
+          - not_null
+      - name: built_area_sqm
+        description: Total built area in square meters
+      - name: land_area_sqm
+        description: Total land area in square meters
+      - name: price_per_sqm
+        description: Computed price per square meter of built area
+      - name: premises_count
+        description: Number of premises in the transaction
+      - name: room_count
+        description: Max room count from local data
+      - name: latitude
+        description: Latitude of the transaction location
+      - name: longitude
+        description: Longitude of the transaction location
+
+  - name: dim_communes
+    description: >
+      Dimension table for communes (municipalities).
+      Deduplicated from parcelle data joined with GeoJSON commune names.
+      Written to dvf_analytics dataset.
+    columns:
+      - name: commune_code
+        description: Primary key (INSEE commune code)
+        tests:
+          - unique
+          - not_null
+      - name: commune_name
+        description: Commune name (from GeoJSON or fallback to code)
+        tests:
+          - not_null
+      - name: department_code
+        description: Department code
+        tests:
+          - not_null
+
+  - name: dim_property_types
+    description: >
+      Dimension table for property types.
+      Deduplicated from mutation codtypbien + libtypbien.
+      Written to dvf_analytics dataset.
+    columns:
+      - name: property_type_code
+        description: Primary key (GnDVF property type code)
+        tests:
+          - unique
+          - not_null
+      - name: property_type_label
+        description: Property type label
+      - name: property_type_level1
+        description: First character of code (1=built, 2=unbuilt)
+        tests:
+          - accepted_values:
+              arguments:
+                values: ['1', '2']
+      - name: property_type_level1_label
+        description: Human-readable level 1 label
+
+  - name: dim_dates
+    description: >
+      Date dimension generated using dbt_utils.date_spine.
+      Covers 2014-01-01 to 2025-12-31.
+      Written to dvf_analytics dataset.
+    columns:
+      - name: date_key
+        description: Primary key (date)
+        tests:
+          - unique
+          - not_null
+      - name: full_date
+        description: Full date value
+        tests:
+          - not_null
+      - name: year
+        description: Year (2014-2025)
+        tests:
+          - not_null
+      - name: quarter
+        description: Quarter (1-4)
+        tests:
+          - not_null
+      - name: month
+        description: Month (1-12)
+        tests:
+          - not_null
+      - name: month_name
+        description: Month name (January-December)
+        tests:
+          - not_null
+      - name: day_of_week
+        description: Day of week (1=Sunday, 7=Saturday in BigQuery)
+        tests:
+          - not_null
+      - name: is_weekend
+        description: True if Saturday or Sunday
+
+  - name: dim_geography
+    description: >
+      Geography dimension combining departments and communes.
+      Contains geometry for map visualizations.
+      Written to dvf_analytics dataset.
+    columns:
+      - name: geo_code
+        description: Primary key (department code or commune INSEE code)
+        tests:
+          - unique
+          - not_null
+      - name: geo_name
+        description: Geographic entity name
+        tests:
+          - not_null
+      - name: geo_level
+        description: Entity level (department or commune)
+        tests:
+          - not_null
+          - accepted_values:
+              arguments:
+                values: ['department', 'commune']
+      - name: department_code
+        description: Department code (same as geo_code for departments)
+        tests:
+          - not_null
+      - name: geometry
+        description: BigQuery GEOGRAPHY type for map visualizations

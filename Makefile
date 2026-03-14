@@ -1,7 +1,8 @@
 .PHONY: help setup terraform-init terraform-plan terraform-apply terraform-destroy \
        docker-up docker-down docker-up-kestra ingest-download ingest-restore \
        ingest-export ingest-geojson ingest-upload bq-load \
-       run dbt-run test clean
+       dbt-deps dbt-seed dbt-run dbt-test dbt-build \
+       run test clean
 
 help: ## Show this help message
 	@grep -E '^[a-zA-Z_-]+:.*?## .*$$' $(MAKEFILE_LIST) | \
@@ -54,8 +55,20 @@ bq-load: ## Load CSV + GeoJSON from GCS into BigQuery raw tables
 run: ## Run full pipeline (placeholder -- filled in later parts)
 	@echo "Pipeline not yet implemented. See PLAN.md for progress."
 
-dbt-run: ## Run dbt transformations (placeholder -- filled in later parts)
-	@echo "dbt not yet configured. See Part 5 in PLAN.md."
+dbt-deps: ## Install dbt packages (dbt_utils)
+	cd dbt_dvf && uv run dbt deps
+
+dbt-seed: ## Load seed reference data into BigQuery
+	cd dbt_dvf && uv run dbt seed
+
+dbt-run: ## Run all dbt models (staging + intermediate + marts)
+	cd dbt_dvf && uv run dbt run
+
+dbt-test: ## Run all dbt tests
+	cd dbt_dvf && uv run dbt test
+
+dbt-build: ## Full dbt workflow: deps + seed + run + test
+	cd dbt_dvf && uv run dbt deps && uv run dbt seed && uv run dbt run && uv run dbt test
 
 test: ## Run all tests
 	uv run python -m pytest tests/ -v

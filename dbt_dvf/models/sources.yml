@@ -1,0 +1,157 @@
+version: 2
+
+sources:
+  - name: dvf_raw
+    database: "{{ env_var('GCP_PROJECT_ID') }}"
+    schema: dvf_raw
+    description: >
+      Raw DVF+ tables loaded from GCS into BigQuery.
+      Contains real estate transaction data from Cerema (2014-2025)
+      and administrative boundary GeoJSON data from Etalab.
+
+    tables:
+      - name: mutation
+        description: >
+          Main transaction table. One row per real estate mutation (sale deed).
+          Partitioned by anneemut, clustered by coddep + codtypbien.
+        columns:
+          - name: idmutation
+            description: Primary key (integer, auto-generated)
+          - name: idopendata
+            description: Open-data mutation identifier (business key)
+          - name: datemut
+            description: Transaction date (exported as string from CSV)
+          - name: anneemut
+            description: Transaction year
+          - name: moismut
+            description: Transaction month
+          - name: coddep
+            description: Department code (e.g., '75', '13', '2A')
+          - name: valeurfonc
+            description: Transaction price in EUR (NULL or 0 for non-market)
+          - name: codtypbien
+            description: Property type code (GnDVF hierarchical)
+          - name: libtypbien
+            description: Property type label
+          - name: latitude
+            description: Latitude extracted from PostGIS geometry
+          - name: longitude
+            description: Longitude extracted from PostGIS geometry
+
+      - name: disposition
+        description: >
+          Sub-transactions within a mutation. One row per disposition.
+        columns:
+          - name: iddispo
+            description: Primary key
+          - name: idmutation
+            description: Foreign key to mutation
+          - name: nodispo
+            description: Disposition number within the mutation
+
+      - name: local
+        description: >
+          Premises (buildings) involved in a disposition. One row per local.
+        columns:
+          - name: iddispoloc
+            description: Primary key
+          - name: idmutation
+            description: Foreign key to mutation
+          - name: codtyploc
+            description: Premises type code (1=house, 2=apt, 3=outbuilding, 4=commercial)
+
+      - name: disposition_parcelle
+        description: >
+          Parcels involved in a disposition. One row per parcel-disposition link.
+          Richer than the parcelle table (includes commune code, dates, land surfaces).
+        columns:
+          - name: iddispopar
+            description: Primary key
+          - name: iddispo
+            description: Foreign key to disposition
+          - name: idmutation
+            description: Foreign key to mutation
+          - name: codcomm
+            description: INSEE commune code
+
+      - name: parcelle
+        description: >
+          Cadastral parcels. One row per unique parcel.
+        columns:
+          - name: idparcelle
+            description: Primary key
+          - name: idpar
+            description: Parcel identifier string
+
+      - name: adresse
+        description: >
+          Unique addresses linked to parcels and locals.
+        columns:
+          - name: idadr
+            description: Primary key
+          - name: codepostal
+            description: Postal code
+
+      - name: ann_nature_mutation
+        description: Reference table for mutation type labels.
+        columns:
+          - name: idnatmut
+            description: Primary key (mutation nature code)
+          - name: libnatmut
+            description: Mutation nature label
+
+      - name: ann_type_local
+        description: Reference table for premises type labels.
+        columns:
+          - name: codtyploc
+            description: Primary key (local type code)
+          - name: libtyploc
+            description: Local type label
+
+      - name: ann_cgi
+        description: Reference table for tax code articles.
+        columns:
+          - name: artcgi
+            description: Primary key (article code)
+          - name: libartcgi
+            description: Article label
+
+      - name: ann_nature_culture
+        description: Reference table for land use types.
+        columns:
+          - name: natcult
+            description: Primary key (culture nature code)
+          - name: libnatcult
+            description: Culture nature label
+
+      - name: ann_nature_culture_speciale
+        description: Reference table for special cultivation types.
+        columns:
+          - name: natcultspe
+            description: Primary key (special culture code)
+          - name: libnatcultspe
+            description: Special culture label
+
+      - name: geo_departments
+        description: >
+          Department boundaries from Etalab GeoJSON.
+          Geometry stored as JSON string (convert with ST_GEOGFROMGEOJSON).
+        columns:
+          - name: code
+            description: Department code (e.g., '75', '13', '2A')
+          - name: nom
+            description: Department name
+          - name: geometry
+            description: GeoJSON geometry as JSON string
+
+      - name: geo_communes
+        description: >
+          Commune boundaries from Etalab GeoJSON.
+          Geometry stored as JSON string (convert with ST_GEOGFROMGEOJSON).
+        columns:
+          - name: code
+            description: INSEE commune code (5 chars)
+          - name: nom
+            description: Commune name
+          - name: geometry
+            description: GeoJSON geometry as JSON string

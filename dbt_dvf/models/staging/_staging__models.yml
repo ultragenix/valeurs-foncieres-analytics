@@ -1,0 +1,113 @@
+version: 2
+
+models:
+  - name: stg_dvf__mutations
+    description: >
+      Cleaned mutations table. Columns renamed to English, types cast,
+      and non-market transactions filtered out (transaction_price_eur > 0).
+    columns:
+      - name: mutation_id
+        description: Primary key (from idmutation)
+        tests:
+          - unique
+          - not_null
+      - name: mutation_opendata_id
+        description: Open-data business key (from idopendata)
+        tests:
+          - not_null
+      - name: transaction_date
+        description: Transaction date (parsed from string)
+      - name: transaction_year
+        description: Transaction year
+        tests:
+          - not_null
+      - name: department_code
+        description: Department code
+        tests:
+          - not_null
+      - name: transaction_price_eur
+        description: Transaction price in EUR (always > 0 after filter)
+        tests:
+          - not_null
+      - name: property_type_code
+        description: GnDVF property type code
+
+  - name: stg_dvf__dispositions
+    description: >
+      Cleaned dispositions table. One row per sub-transaction within a mutation.
+    columns:
+      - name: disposition_id
+        description: Primary key (from iddispo)
+        tests:
+          - unique
+          - not_null
+      - name: mutation_id
+        description: Foreign key to mutations
+        tests:
+          - not_null
+
+  - name: stg_dvf__locals
+    description: >
+      Cleaned locals (premises) table. One row per building unit
+      involved in a disposition.
+    columns:
+      - name: local_id
+        description: Primary key (from iddispoloc)
+        tests:
+          - unique
+          - not_null
+      - name: mutation_id
+        description: Foreign key to mutations
+        tests:
+          - not_null
+      - name: local_type_code
+        description: Premises type code (1=house, 2=apt, 3=outbuilding, 4=commercial)
+
+  - name: stg_dvf__parcelles
+    description: >
+      Cleaned parcelles from disposition_parcelle table. One row per
+      parcel-disposition link, with commune code and land surfaces.
+    columns:
+      - name: disposition_parcel_id
+        description: Primary key (from iddispopar)
+        tests:
+          - unique
+          - not_null
+      - name: mutation_id
+        description: Foreign key to mutations
+        tests:
+          - not_null
+      - name: commune_code
+        description: INSEE commune code
+        tests:
+          - not_null
+
+  - name: stg_geo__departments
+    description: >
+      Department boundaries from Etalab GeoJSON. Geometry converted
+      from JSON string to BigQuery GEOGRAPHY type.
+    columns:
+      - name: department_code
+        description: Department code (primary key)
+        tests:
+          - unique
+          - not_null
+      - name: department_name
+        description: Department name
+        tests:
+          - not_null
+
+  - name: stg_geo__communes
+    description: >
+      Commune boundaries from Etalab GeoJSON. Geometry converted
+      from JSON string to BigQuery GEOGRAPHY type.
+    columns:
+      - name: commune_code
+        description: INSEE commune code (primary key)
+        tests:
+          - unique
+          - not_null
+      - name: commune_name
+        description: Commune name
+        tests:
+          - not_null

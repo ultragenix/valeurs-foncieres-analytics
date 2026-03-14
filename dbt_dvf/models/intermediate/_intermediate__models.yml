@@ -1,0 +1,33 @@
+version: 2
+
+models:
+  - name: int_transactions__enriched
+    description: >
+      Enriched transactions at one row per mutation. Joins mutation data
+      with aggregated disposition, local, and parcelle information.
+      Commune code is sourced from parcelle data (via disposition_parcelle)
+      with fallback to mutation's own commune code.
+    columns:
+      - name: mutation_id
+        description: Primary key (one row per mutation)
+        tests:
+          - unique
+          - not_null
+      - name: transaction_date
+        description: Transaction date
+      - name: transaction_year
+        description: Transaction year
+        tests:
+          - not_null
+      - name: department_code
+        description: Department code
+        tests:
+          - not_null
+      - name: commune_code
+        description: INSEE commune code from parcelle or mutation fallback
+      - name: transaction_price_eur
+        description: Transaction price in EUR (always > 0)
+        tests:
+          - not_null
+      - name: property_type_code
+        description: GnDVF property type code
