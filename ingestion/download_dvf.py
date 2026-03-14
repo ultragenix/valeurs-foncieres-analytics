@@ -123,9 +123,21 @@ def _download_with_progress(url: str, destination: Path) -> bool:
     return True
 
 
+def _validate_archive_members(names: list[str]) -> None:
+    """Validate archive member filenames for path traversal attacks.
+
+    Raises ValueError if any member has an absolute path or contains '..'.
+    """
+    for name in names:
+        if ".." in name or Path(name).is_absolute():
+            msg = f"Unsafe archive member detected: {name}"
+            raise ValueError(msg)
+
+
 def _extract_7z(archive_path: Path, target_dir: Path) -> list[Path]:
     """Extract a .7z archive into *target_dir* and return extracted paths.
 
+    Validates member filenames before extraction to prevent path traversal.
     Requires the ``py7zr`` package.
     """
     try:
@@ -140,6 +152,7 @@ def _extract_7z(archive_path: Path, target_dir: Path) -> list[Path]:
     target_dir.mkdir(parents=True, exist_ok=True)
 
     with py7zr.SevenZipFile(archive_path, mode="r") as archive:
+        _validate_archive_members(archive.getnames())
         archive.extractall(path=target_dir)
 
     extracted = sorted(target_dir.glob("*.sql"))

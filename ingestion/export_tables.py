@@ -5,7 +5,9 @@ PostgreSQL array columns (to first-element or comma-separated strings),
 and drops heavy polygon geometry columns not needed for BigQuery.
 """
 
+import csv
 import logging
+import re
 import sys
 from pathlib import Path
 
@@ -54,6 +56,9 @@ TABLES_WITH_CODDEP: list[str] = [
 # Geometry columns to exclude from parcelle export.
 PARCELLE_EXCLUDE_COLUMNS: list[str] = ["geompar", "geomparmut"]
 
+# Regex pattern for valid French department codes (e.g., "01", "75", "2A", "974").
+DEPARTMENT_CODE_PATTERN: re.Pattern[str] = re.compile(r"^[0-9]{2,3}[A-B]?$")
+
 # All tables in export order.
 ALL_EXPORT_TABLES: list[str] = [
     "mutation",
@@ -98,14 +103,30 @@ def _get_table_columns(
 # ---------------------------------------------------------------------------
 # Query builders
 # ---------------------------------------------------------------------------
+def _validate_department_codes(departments: list[str]) -> None:
+    """Validate that all department codes match the expected pattern.
+
+    Raises ValueError if any code is invalid.
+    """
+    for code in departments:
+        if not DEPARTMENT_CODE_PATTERN.match(code):
+            msg = f"Invalid department code: {code!r}"
+            raise ValueError(msg)
+
+
 def _build_where_clause(
     table_name: str, departments: list[str] | None
 ) -> str:
-    """Build a WHERE clause filtering by department codes, or empty string."""
+    """Build a WHERE clause filtering by department codes, or empty string.
+
+    Validates department codes against a strict regex before embedding
+    them in SQL to prevent injection.
+    """
     if not departments:
         return ""
     if table_name not in TABLES_WITH_CODDEP:
         return ""
+    _validate_department_codes(departments)
     placeholders = ", ".join(f"'{d}'" for d in departments)
     return f" WHERE coddep IN ({placeholders})"
 
@@ -184,10 +205,15 @@ def _export_table(
 
 
 def _count_csv_rows(csv_path: Path) -> int:
-    """Count data rows in a CSV file (total lines minus header)."""
+    """Count data rows in a CSV file using csv.reader.
+
+    Handles multiline quoted fields correctly by counting actual CSV
+    records rather than raw lines. Subtracts 1 for the header row.
+    """
     with open(csv_path, "r", encoding="utf-8") as fh:
-        line_count = sum(1 for _ in fh)
-    return max(line_count - 1, 0)
+        reader = csv.reader(fh)
+        row_count = sum(1 for _ in reader)
+    return max(row_count - 1, 0)
 
 
 # ---------------------------------------------------------------------------

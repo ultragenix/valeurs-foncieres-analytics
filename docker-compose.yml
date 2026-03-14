@@ -12,7 +12,7 @@ services:
       POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-dvf_local_only}
       POSTGRES_DB: ${POSTGRES_DB:-dvf}
     ports:
-      - "${POSTGRES_PORT:-5432}:5432"
+      - "127.0.0.1:${POSTGRES_PORT:-5432}:5432"
     healthcheck:
       test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER:-dvf} -d ${POSTGRES_DB:-dvf}"]
       interval: 5s
@@ -40,9 +40,9 @@ services:
   # Kestra orchestrator -- DAG-based pipeline execution
   # ---------------------------------------------------------------------------
   kestra:
-    image: kestra/kestra:latest
+    image: kestra/kestra:v0.21.1
     ports:
-      - "${KESTRA_PORT:-8080}:8080"
+      - "127.0.0.1:${KESTRA_PORT:-8080}:8080"
     environment:
       KESTRA_CONFIGURATION: |
         datasources:
@@ -52,6 +52,12 @@ services:
             username: kestra
             password: kestra_local_only
     command: server standalone
+    healthcheck:
+      test: ["CMD-SHELL", "curl -f http://localhost:8080/api/v1/configs || exit 1"]
+      interval: 10s
+      timeout: 10s
+      retries: 10
+      start_period: 30s
     depends_on:
       kestra-postgres:
         condition: service_healthy

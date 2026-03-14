@@ -4,9 +4,12 @@ Uploads exported DVF+ CSV files to ``raw/dvf/`` and GeoJSON administrative
 boundary files to ``raw/geojson/`` in the configured GCS bucket.
 """
 
+from __future__ import annotations
+
 import logging
 import sys
 from pathlib import Path
+from typing import Any
 
 from tqdm import tqdm
 
@@ -55,14 +58,18 @@ def _collect_files() -> tuple[list[Path], list[Path]]:
 # ---------------------------------------------------------------------------
 # Upload
 # ---------------------------------------------------------------------------
-def _get_gcs_client():  # noqa: ANN201 -- returns google.cloud.storage.Client
-    """Create and return a GCS storage client."""
+def _get_gcs_client() -> Any:
+    """Create and return a GCS storage client.
+
+    Returns a ``google.cloud.storage.Client`` instance (typed as Any to
+    avoid import-time dependency on google-cloud-storage).
+    """
     from google.cloud import storage  # noqa: WPS433 -- lazy import
 
     return storage.Client()
 
 
-def _upload_file(bucket, local_path: Path, gcs_path: str) -> None:  # noqa: ANN001
+def _upload_file(bucket: Any, local_path: Path, gcs_path: str) -> None:
     """Upload a single file to GCS and log its size."""
     blob = bucket.blob(gcs_path)
     blob.upload_from_filename(str(local_path))
@@ -77,7 +84,7 @@ def _upload_file(bucket, local_path: Path, gcs_path: str) -> None:  # noqa: ANN0
 
 
 def _upload_file_list(
-    bucket,  # noqa: ANN001
+    bucket: Any,
     files: list[Path],
     prefix: str,
     progress: tqdm,
@@ -135,7 +142,7 @@ def upload_to_gcs() -> int:
 
 
 def _upload_all(
-    bucket,  # noqa: ANN001
+    bucket: Any,
     csv_files: list[Path],
     geojson_files: list[Path],
     total_files: int,
