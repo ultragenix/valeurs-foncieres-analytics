@@ -1,5 +1,6 @@
 .PHONY: help setup terraform-init terraform-plan terraform-apply terraform-destroy \
        docker-up docker-down docker-up-kestra ingest-download ingest-restore \
+       ingest-export ingest-geojson ingest-upload \
        run dbt-run test clean
 
 help: ## Show this help message
@@ -37,6 +38,15 @@ ingest-download: ## Download DVF+ SQL dump from Cerema
 
 ingest-restore: ## Restore DVF+ SQL dump into PostgreSQL container
 	uv run python -m ingestion.restore_dump
+
+ingest-export: ## Export PostgreSQL tables to CSV
+	uv run python -m ingestion.export_tables
+
+ingest-geojson: ## Download GeoJSON admin boundaries
+	uv run python -m ingestion.download_geojson
+
+ingest-upload: ## Upload CSV + GeoJSON to GCS
+	uv run python -m ingestion.upload_to_gcs
 
 run: ## Run full pipeline (placeholder -- filled in later parts)
 	@echo "Pipeline not yet implemented. See PLAN.md for progress."
