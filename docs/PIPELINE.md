@@ -1,6 +1,6 @@
 # Pipeline Documentation
 
-Data pipeline for DVF+ France real estate transactions. This document covers all implemented pipeline steps (Parts 2--5). Kestra orchestration (Part 7) will wrap these steps into a single DAG.
+Data pipeline for DVF+ France real estate transactions. This document covers all implemented pipeline steps (Parts 2--5, 7), including Kestra orchestration.
 
 ## Pipeline Overview
 
@@ -241,44 +241,63 @@ Each step implements the following error handling patterns:
 | Partial failure | BigQuery loading processes all blobs and reports total; GeoJSON with no features is skipped with a warning |
 | dbt tests | dbt reports test failures with details; `make dbt-build` stops on test failure |
 
-## Running the Full Pipeline (Manual)
+## Running the Full Pipeline
 
-Until Kestra orchestration is implemented (Part 7), run the pipeline manually:
+There are two options for running the full pipeline: Kestra-based orchestration or local sequential execution.
+
+### Option A: Local Sequential (recommended for peer reviewers)
+
+The simplest way to run the entire pipeline end-to-end:
 
 ```bash
 # 1. Provision infrastructure (one-time)
 make setup
 make terraform-apply
 
-# 2. Start ephemeral PostgreSQL
-make docker-up
+# 2. Run the full pipeline (all steps, sequentially)
+make run
 
-# 3. Ingest data (sequential steps)
-make ingest-download
-make ingest-restore
-make ingest-export
-make ingest-geojson
-make ingest-upload
-
-# 4. Stop PostgreSQL (no longer needed)
-make docker-down
-
-# 5. Load into BigQuery
-make bq-load
-
-# 6. Run dbt transformations
-make dbt-build
-
-# 7. Validate dashboard data
+# 3. Validate dashboard data
 make dashboard-validate
 ```
 
-## Planned: Kestra Orchestration (Part 7)
+`make run` is an alias for `make pipeline-local`, which executes all steps in order: download, PostgreSQL start, restore, export, GeoJSON download, PostgreSQL stop, GCS upload, BigQuery load, and dbt build.
 
-The Kestra DAG (`kestra/flows/dvf_pipeline.yml`) will wrap all steps into a single orchestrated pipeline with:
-- Sequential task execution following the dependency graph
-- Error handling and retry logic
-- Logging and monitoring via Kestra UI
-- Trigger support (manual and scheduled)
+### Option B: Kestra Orchestration
 
-The DAG will be accessible via the Kestra web UI at `http://localhost:8080` (after `make docker-up-kestra`).
+For monitoring and retry capabilities via a web UI:
+
+```bash
+# 1. Provision infrastructure (one-time)
+make setup
+make terraform-apply
+
+# 2. Start Kestra
+make docker-up-kestra
+
+# 3. Deploy the pipeline flow
+make kestra-deploy
+
+# 4. Trigger the pipeline
+make pipeline
+
+# 5. Monitor at http://localhost:8080
+```
+
+The Kestra DAG (`kestra/flows/dvf_pipeline.yml`) contains 8 tasks with parallel execution for independent steps (export + GeoJSON download) and retry logic on download and restore tasks. The flow accepts a `mode` parameter (`demo` or `full`).
+
+### Option C: Step-by-step (manual control)
+
+For debugging or running individual steps:
+
+```bash
+make docker-up          # Start ephemeral PostgreSQL
+make ingest-download    # Download DVF+ SQL dump
+make ingest-restore     # Restore into PostgreSQL
+make ingest-export      # Export to CSV
+make ingest-geojson     # Download GeoJSON boundaries
+make ingest-upload      # Upload to GCS
+make docker-down        # Stop PostgreSQL
+make bq-load            # Load into BigQuery
+make dbt-build          # Run dbt transformations + tests
+```

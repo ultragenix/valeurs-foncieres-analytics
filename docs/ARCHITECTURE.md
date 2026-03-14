@@ -1,6 +1,6 @@
 # Architecture
 
-Technical architecture for the DVF+ France real estate analytics pipeline. This document covers validated and implemented components (Parts 1--6). Part 7 (Kestra orchestration) is planned.
+Technical architecture for the DVF+ France real estate analytics pipeline. This document covers all implemented components (Parts 1--7).
 
 ## System Overview
 
@@ -62,7 +62,7 @@ Three services defined, two currently active:
 |---------|-------|---------|-------|--------|
 | `postgres` | Custom (PG 16 + PostGIS 3.4) | Ephemeral DVF+ restore and export | `127.0.0.1:5432` | Active during ingestion |
 | `kestra-postgres` | `postgres:16` | Kestra metadata store | Internal only | Active with Kestra |
-| `kestra` | `kestra/kestra:v0.21.1` | DAG-based pipeline orchestrator | `127.0.0.1:8080` | Planned (Part 7) |
+| `kestra` | `kestra/kestra:v0.21.1` | DAG-based pipeline orchestrator | `127.0.0.1:8080` | Active with Kestra |
 
 All ports are bound to `127.0.0.1` (localhost only). All services have healthchecks configured.
 
@@ -255,22 +255,41 @@ The dashboard connects to BigQuery mart tables in the `dvf_analytics` dataset an
 
 Setup requires manual creation in the Looker Studio web UI. Full instructions and validation queries are in [DASHBOARD.md](DASHBOARD.md).
 
-### 7. Planned: Kestra Orchestration (Part 7)
+### 7. Kestra Orchestration
 
-The Kestra DAG (`kestra/flows/dvf_pipeline.yml`) will wrap all pipeline steps (ingestion + dbt) into a single orchestrated flow with:
-- Sequential task execution following the dependency graph
-- Error handling and retry logic
-- Logging and monitoring via Kestra UI
-- Trigger support (manual and scheduled)
+The Kestra DAG (`kestra/flows/dvf_pipeline.yml`) wraps all pipeline steps (ingestion + dbt) into a single orchestrated flow.
 
-The DAG will be accessible via the Kestra web UI at `http://localhost:8080` (after `make docker-up-kestra`).
+**DAG structure (8 tasks):**
+
+| Task | Type | Dependencies | Description |
+|------|------|-------------|-------------|
+| `download_dvf` | Shell | None | Download DVF+ SQL dump from Cerema |
+| `start_postgres` | Shell | `download_dvf` | Start ephemeral PostgreSQL container |
+| `restore_dump` | Shell | `start_postgres` | Restore SQL dump into PostgreSQL (retry on failure) |
+| `export_tables` | Shell | `restore_dump` | Export PostgreSQL tables to CSV |
+| `download_geojson` | Shell | `restore_dump` | Download GeoJSON admin boundaries (parallel with export) |
+| `upload_to_gcs` | Shell | `export_tables`, `download_geojson` | Upload CSV + GeoJSON to GCS |
+| `stop_postgres` | Shell | `upload_to_gcs` | Stop and remove ephemeral PostgreSQL container |
+| `bq_load_and_dbt` | Shell | `stop_postgres` | Load into BigQuery + run dbt build |
+
+**Features:**
+- Parallel execution for `export_tables` and `download_geojson` (independent steps)
+- Retry logic on `download_dvf` and `restore_dump` tasks (transient network/database failures)
+- Mode input (`demo`/`full`) passed as a flow parameter
+- Accessible via Kestra web UI at http://localhost:8080
+
+**Commands:**
+- `make docker-up-kestra` -- start Kestra and its internal PostgreSQL
+- `make kestra-deploy` -- deploy the flow YAML to Kestra via API
+- `make pipeline` -- trigger the pipeline execution via Kestra API
+- `make pipeline-local` -- run the full pipeline sequentially without Kestra (fallback)
 
 ## Networking
 
 | Service | Port | Binding | Protocol |
 |---------|------|---------|----------|
 | PostgreSQL (ephemeral) | 5432 | `127.0.0.1` only | TCP |
-| Kestra UI (planned) | 8080 | `127.0.0.1` only | HTTP |
+| Kestra UI | 8080 | `127.0.0.1` only | HTTP |
 | GCS | 443 | Outbound HTTPS | HTTPS |
 | BigQuery | 443 | Outbound HTTPS | HTTPS |
 | Cerema Box | 443 | Outbound HTTPS | HTTPS |
