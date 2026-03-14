@@ -1,7 +1,7 @@
 .PHONY: help setup terraform-init terraform-plan terraform-apply terraform-destroy \
        docker-up docker-down docker-up-kestra ingest-download ingest-restore \
        ingest-export ingest-geojson ingest-upload bq-load \
-       dbt-deps dbt-seed dbt-run dbt-test dbt-build \
+       dbt-deps dbt-run dbt-test dbt-build \
        dashboard-validate \
        run test clean
 
@@ -59,25 +59,22 @@ run: ## Run full pipeline (placeholder -- filled in later parts)
 dbt-deps: ## Install dbt packages (dbt_utils)
 	cd dbt_dvf && uv run dbt deps
 
-dbt-seed: ## Load seed reference data into BigQuery
-	cd dbt_dvf && uv run dbt seed
-
 dbt-run: ## Run all dbt models (staging + intermediate + marts)
 	cd dbt_dvf && uv run dbt run
 
 dbt-test: ## Run all dbt tests
 	cd dbt_dvf && uv run dbt test
 
-dbt-build: ## Full dbt workflow: deps + seed + run + test
-	cd dbt_dvf && uv run dbt deps && uv run dbt seed && uv run dbt run && uv run dbt test
+dbt-build: ## Full dbt workflow: deps + run + test
+	cd dbt_dvf && uv run dbt deps && uv run dbt run && uv run dbt test
 
 dashboard-validate: ## Validate dashboard data by running tile queries against BigQuery
 	@echo "=== Tile 1: Transaction Count by Property Type ==="
-	bq query --use_legacy_sql=false --project_id=$(shell grep GCP_PROJECT_ID .env | cut -d= -f2) \
+	bq query --use_legacy_sql=false --project_id=$(shell grep GCP_PROJECT_ID .env | cut -d= -f2 | cut -d'#' -f1 | tr -d ' ') \
 		'SELECT property_type_label, COUNT(*) AS cnt FROM dvf_analytics.fct_transactions GROUP BY 1 ORDER BY cnt DESC LIMIT 10'
 	@echo ""
 	@echo "=== Tile 2: Transaction Volume by Year ==="
-	bq query --use_legacy_sql=false --project_id=$(shell grep GCP_PROJECT_ID .env | cut -d= -f2) \
+	bq query --use_legacy_sql=false --project_id=$(shell grep GCP_PROJECT_ID .env | cut -d= -f2 | cut -d'#' -f1 | tr -d ' ') \
 		'SELECT transaction_year, COUNT(*) AS cnt, ROUND(AVG(transaction_price_eur), 0) AS avg_price FROM dvf_analytics.fct_transactions GROUP BY 1 ORDER BY 1'
 
 test: ## Run all tests

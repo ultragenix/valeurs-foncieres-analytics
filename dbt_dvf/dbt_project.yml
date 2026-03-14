@@ -5,7 +5,6 @@ config-version: 2
 profile: dbt_dvf
 
 model-paths: ["models"]
-seed-paths: ["seeds"]
 test-paths: ["tests"]
 macro-paths: ["macros"]
 analysis-paths: ["analyses"]
@@ -13,10 +12,6 @@ target-path: "target"
 clean-targets:
   - "target"
   - "dbt_packages"
-
-seeds:
-  dbt_dvf:
-    +schema: dvf_raw
 
 models:
   dbt_dvf:

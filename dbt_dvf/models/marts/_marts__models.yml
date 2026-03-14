@@ -105,8 +105,7 @@ models:
         description: First character of code (1=built, 2=unbuilt)
         tests:
           - accepted_values:
-              arguments:
-                values: ['1', '2']
+              values: ['1', '2']
       - name: property_type_level1_label
         description: Human-readable level 1 label
 
@@ -168,8 +167,7 @@ models:
         tests:
           - not_null
           - accepted_values:
-              arguments:
-                values: ['department', 'commune']
+              values: ['department', 'commune']
       - name: department_code
         description: Department code (same as geo_code for departments)
         tests:
