@@ -2,9 +2,27 @@
 
 ## Overview
 
-The main fact table `fct_transactions` in BigQuery uses **integer range partitioning** on the transaction year and **clustering** on department code and property type code. This combination optimizes the two most common query patterns in real estate analytics: time-range filtering and geographic/property-type drill-downs.
+This document describes the partitioning and clustering strategy applied at two layers:
 
-## Partitioning by Year (`transaction_year`)
+1. **Raw layer** (`dvf_raw.mutation`): integer range partitioning on `anneemut` (year) and clustering on `coddep`, `codtypbien`. Applied at load time by `load_to_bigquery.py`.
+2. **Mart layer** (`dvf_analytics.fct_transactions`): integer range partitioning on `transaction_year` and clustering on `department_code`, `property_type_code`. Applied by dbt materialization config.
+
+Both layers use the same strategy because the query patterns are consistent across raw exploration and dashboard queries.
+
+## Raw Layer: Partitioning on `anneemut` and Clustering on `coddep`, `codtypbien`
+
+At the raw layer, the `dvf_raw.mutation` table is partitioned by `anneemut` (integer range, 2014-2025) and clustered by `coddep` and `codtypbien`. This ensures that even exploratory queries on the raw data benefit from partition pruning and block skipping.
+
+```sql
+-- Raw layer query: count mutations per department for 2023
+SELECT coddep, COUNT(*) AS cnt
+FROM dvf_raw.mutation
+WHERE anneemut = 2023
+GROUP BY coddep
+ORDER BY cnt DESC;
+```
+
+## Mart Layer: Partitioning by Year (`transaction_year`)
 
 **What it does:** BigQuery physically separates the table into one partition per year (2014 through 2025). When a query includes a `WHERE transaction_year = 2023` filter, BigQuery reads only that single partition and skips all other years entirely.
 
@@ -57,3 +75,19 @@ ORDER BY transaction_year;
 | Single year + dept + property type | ~20M rows, ~2 GB scanned | ~5K rows, ~1 MB scanned |
 
 BigQuery charges by bytes scanned. Partitioning and clustering together can reduce query costs by 95%+ for typical dashboard queries.
+
+## Verification
+
+Use the following commands to verify partitioning and clustering are applied:
+
+```bash
+# Check raw mutation table partitioning and clustering
+bq show --format=prettyjson valeurs-foncieres-analytics:dvf_raw.mutation | grep -A5 rangePartitioning
+bq show --format=prettyjson valeurs-foncieres-analytics:dvf_raw.mutation | grep -A2 clustering
+
+# Query INFORMATION_SCHEMA to list partitions
+SELECT table_name, partition_id, total_rows
+FROM dvf_raw.INFORMATION_SCHEMA.PARTITIONS
+WHERE table_name = 'mutation'
+ORDER BY partition_id;
+```

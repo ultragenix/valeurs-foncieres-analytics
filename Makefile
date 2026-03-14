@@ -1,6 +1,6 @@
 .PHONY: help setup terraform-init terraform-plan terraform-apply terraform-destroy \
        docker-up docker-down docker-up-kestra ingest-download ingest-restore \
-       ingest-export ingest-geojson ingest-upload \
+       ingest-export ingest-geojson ingest-upload bq-load \
        run dbt-run test clean
 
 help: ## Show this help message
@@ -47,6 +47,9 @@ ingest-geojson: ## Download GeoJSON admin boundaries
 
 ingest-upload: ## Upload CSV + GeoJSON to GCS
 	uv run python -m ingestion.upload_to_gcs
+
+bq-load: ## Load CSV + GeoJSON from GCS into BigQuery raw tables
+	uv run python -m ingestion.load_to_bigquery
 
 run: ## Run full pipeline (placeholder -- filled in later parts)
 	@echo "Pipeline not yet implemented. See PLAN.md for progress."

@@ -237,3 +237,4 @@ dbt_dvf/logs/
 
 #script
 auto-cycle.sh
+auto-cycle-2.sh
