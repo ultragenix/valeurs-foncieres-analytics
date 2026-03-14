@@ -12,7 +12,7 @@ from pathlib import Path
 import requests
 from tqdm import tqdm
 
-from ingestion.config import DATA_GEOJSON_DIR
+from ingestion.config import DATA_GEOJSON_DIR, DOWNLOAD_CHUNK_SIZE, HTTP_CONNECT_TIMEOUT
 
 # ---------------------------------------------------------------------------
 # Constants
@@ -38,12 +38,8 @@ FEATURE_THRESHOLDS: dict[str, int] = {
     "communes-1000m.geojson": MIN_COMMUNE_FEATURES,
 }
 
-# HTTP timeouts (connect, read) in seconds.
-HTTP_CONNECT_TIMEOUT: int = 30
+# HTTP read timeout in seconds (generous for large GeoJSON files).
 HTTP_READ_TIMEOUT: int = 300
-
-# Chunk size for streaming download (1 MB).
-DOWNLOAD_CHUNK_SIZE: int = 1_048_576
 
 
 # ---------------------------------------------------------------------------

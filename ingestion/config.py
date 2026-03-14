@@ -1,10 +1,14 @@
 """Shared configuration for ingestion scripts.
 
-Loads environment variables from .env and exposes typed constants.
+Loads environment variables from .env and exposes typed constants
+and shared utility functions.
 """
+
+from __future__ import annotations
 
 import os
 from pathlib import Path
+from typing import Any
 
 from dotenv import load_dotenv
 
@@ -53,8 +57,51 @@ BQ_DATASET_STAGING: str = os.getenv("BQ_DATASET_STAGING", "dvf_staging")
 BQ_DATASET_ANALYTICS: str = os.getenv("BQ_DATASET_ANALYTICS", "dvf_analytics")
 
 # ---------------------------------------------------------------------------
+# HTTP download settings
+# ---------------------------------------------------------------------------
+HTTP_CONNECT_TIMEOUT: int = 30
+DOWNLOAD_CHUNK_SIZE: int = 1_048_576  # 1 MB
+
+# ---------------------------------------------------------------------------
+# GCS path prefixes
+# ---------------------------------------------------------------------------
+GCS_DVF_PREFIX: str = "raw/dvf"
+GCS_GEOJSON_PREFIX: str = "raw/geojson"
+
+# ---------------------------------------------------------------------------
 # Data directories
 # ---------------------------------------------------------------------------
 DATA_DIR: Path = PROJECT_ROOT / "data"
 DATA_EXPORT_DIR: Path = DATA_DIR / "export"
 DATA_GEOJSON_DIR: Path = DATA_DIR / "geojson"
+
+
+# ---------------------------------------------------------------------------
+# Shared connection helpers
+# ---------------------------------------------------------------------------
+def get_pg_connection() -> Any:
+    """Open a psycopg2 connection to the DVF PostgreSQL database.
+
+    Returns a ``psycopg2.extensions.connection`` instance (typed as Any to
+    avoid import-time dependency on psycopg2 for modules that don't need it).
+    """
+    import psycopg2  # noqa: WPS433 -- lazy import
+
+    return psycopg2.connect(
+        host=POSTGRES_HOST,
+        port=POSTGRES_PORT,
+        user=POSTGRES_USER,
+        password=POSTGRES_PASSWORD,
+        dbname=POSTGRES_DB,
+    )
+
+
+def get_gcs_client() -> Any:
+    """Create and return a GCS storage client.
+
+    Returns a ``google.cloud.storage.Client`` instance (typed as Any to
+    avoid import-time dependency on google-cloud-storage).
+    """
+    from google.cloud import storage  # noqa: WPS433 -- lazy import
+
+    return storage.Client()

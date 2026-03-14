@@ -21,6 +21,7 @@ from ingestion.config import (
     POSTGRES_PASSWORD,
     POSTGRES_PORT,
     POSTGRES_USER,
+    get_pg_connection,
 )
 
 # ---------------------------------------------------------------------------
@@ -136,13 +137,7 @@ def _run_psql_file(sql_file: Path) -> int:
 
 def _get_connection() -> psycopg2.extensions.connection:
     """Open a psycopg2 connection to the DVF database."""
-    return psycopg2.connect(
-        host=POSTGRES_HOST,
-        port=POSTGRES_PORT,
-        user=POSTGRES_USER,
-        password=POSTGRES_PASSWORD,
-        dbname=POSTGRES_DB,
-    )
+    return get_pg_connection()
 
 
 def _ensure_postgis(conn: psycopg2.extensions.connection) -> None:

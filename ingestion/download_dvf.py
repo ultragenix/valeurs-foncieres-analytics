@@ -16,7 +16,7 @@ from pathlib import Path
 import requests
 from tqdm import tqdm
 
-from ingestion.config import DATA_DIR
+from ingestion.config import DATA_DIR, DOWNLOAD_CHUNK_SIZE, HTTP_CONNECT_TIMEOUT
 
 # ---------------------------------------------------------------------------
 # Constants
@@ -40,17 +40,11 @@ CEREMA_DOC_URL: str = (
 # Expected archive suffix.
 ARCHIVE_SUFFIX: str = ".7z"
 
-# HTTP connection timeout in seconds.
-HTTP_CONNECT_TIMEOUT: int = 30
-
 # HTTP read timeout in seconds (per chunk, generous for large files).
 HTTP_READ_TIMEOUT: int = 120
 
 # Backward-compatible alias (used as connect timeout).
 HTTP_TIMEOUT_SECONDS: int = HTTP_CONNECT_TIMEOUT
-
-# Chunk size for streaming download (1 MB).
-DOWNLOAD_CHUNK_SIZE: int = 1_048_576
 
 
 # ---------------------------------------------------------------------------

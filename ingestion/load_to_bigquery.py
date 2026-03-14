@@ -19,15 +19,15 @@ from ingestion.config import (
     BQ_DATASET_RAW,
     GCP_PROJECT_ID,
     GCS_BUCKET_NAME,
+    GCS_DVF_PREFIX,
+    GCS_GEOJSON_PREFIX,
+    get_gcs_client,
 )
 
 # ---------------------------------------------------------------------------
 # Constants
 # ---------------------------------------------------------------------------
 logger = logging.getLogger(__name__)
-
-GCS_DVF_PREFIX: str = "raw/dvf"
-GCS_GEOJSON_PREFIX: str = "raw/geojson"
 
 MUTATION_TABLE: str = "mutation"
 PARTITION_FIELD: str = "anneemut"
@@ -57,6 +57,9 @@ def _validate_config() -> bool:
         return False
     if not GCS_BUCKET_NAME:
         logger.error("GCS_BUCKET_NAME is not configured.")
+        return False
+    if not BQ_DATASET_RAW:
+        logger.error("BQ_DATASET_RAW is not configured.")
         return False
     return True
 
@@ -120,9 +123,7 @@ def _get_bq_client() -> Any:
 
 def _get_gcs_client() -> Any:
     """Create and return a GCS storage client."""
-    from google.cloud import storage  # noqa: WPS433
-
-    return storage.Client()
+    return get_gcs_client()
 
 
 # ---------------------------------------------------------------------------

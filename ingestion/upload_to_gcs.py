@@ -13,15 +13,19 @@ from typing import Any
 
 from tqdm import tqdm
 
-from ingestion.config import DATA_EXPORT_DIR, DATA_GEOJSON_DIR, GCS_BUCKET_NAME
+from ingestion.config import (
+    DATA_EXPORT_DIR,
+    DATA_GEOJSON_DIR,
+    GCS_BUCKET_NAME,
+    GCS_DVF_PREFIX,
+    GCS_GEOJSON_PREFIX,
+    get_gcs_client,
+)
 
 # ---------------------------------------------------------------------------
 # Constants
 # ---------------------------------------------------------------------------
 logger = logging.getLogger(__name__)
-
-GCS_DVF_PREFIX: str = "raw/dvf"
-GCS_GEOJSON_PREFIX: str = "raw/geojson"
 
 
 # ---------------------------------------------------------------------------
@@ -59,14 +63,8 @@ def _collect_files() -> tuple[list[Path], list[Path]]:
 # Upload
 # ---------------------------------------------------------------------------
 def _get_gcs_client() -> Any:
-    """Create and return a GCS storage client.
-
-    Returns a ``google.cloud.storage.Client`` instance (typed as Any to
-    avoid import-time dependency on google-cloud-storage).
-    """
-    from google.cloud import storage  # noqa: WPS433 -- lazy import
-
-    return storage.Client()
+    """Create and return a GCS storage client."""
+    return get_gcs_client()
 
 
 def _upload_file(bucket: Any, local_path: Path, gcs_path: str) -> None:

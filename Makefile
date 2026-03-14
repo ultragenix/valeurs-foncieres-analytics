@@ -57,8 +57,8 @@ run: ## Run full pipeline (placeholder -- filled in later parts)
 dbt-run: ## Run dbt transformations (placeholder -- filled in later parts)
 	@echo "dbt not yet configured. See Part 5 in PLAN.md."
 
-test: ## Run all tests (placeholder -- filled in later parts)
-	@echo "Tests not yet implemented. See PLAN.md for progress."
+test: ## Run all tests
+	uv run python -m pytest tests/ -v
 
 clean: ## Tear down everything (containers + GCP resources)
 	docker compose down -v
