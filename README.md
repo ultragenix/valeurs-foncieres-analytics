@@ -227,31 +227,34 @@ make terraform-apply          # creates GCS bucket + 3 BigQuery datasets (~30 se
 
 Download the DVF+ SQL dump from Cerema Box (manual step — no account needed):
 
-| Region | Link | Size | Duration |
-|--------|------|------|----------|
-| **La Reunion (recommended)** | [Download .7z](https://cerema.app.box.com/v/dvfplus-opendata/folder/347155412504) | 38 MB | ~5 min pipeline |
-| Ile-de-France | [Browse](https://cerema.app.box.com/v/dvfplus-opendata) | 700 MB | ~15 min pipeline |
-| National (11 files) | [Browse](https://cerema.app.box.com/v/dvfplus-opendata) | 4-5 GB | ~1-2h pipeline |
+| Region | Link | Size | `DVF_DEMO_DEPARTMENTS` | Duration |
+|--------|------|------|----------------------|----------|
+| **La Reunion (recommended)** | [Download .7z](https://cerema.app.box.com/v/dvfplus-opendata/folder/347155412504) | 38 MB | `974` (default) | ~5 min |
+| Ile-de-France | [Browse](https://cerema.app.box.com/v/dvfplus-opendata) | 700 MB | `75` (Paris only) | ~15 min |
+| National (11 files) | [Browse](https://cerema.app.box.com/v/dvfplus-opendata) | 4-5 GB | use `DVF_MODE=full` | ~1-2h |
 
-> **Recommended for review**: download La Reunion (~38 MB). The `.env` is pre-configured for it (`DVF_DEMO_DEPARTMENTS=974`).
+> **Recommended for review**: La Reunion (~38 MB). The `.env` is pre-configured for it — no changes needed.
 
 ```bash
 mkdir -p data
 cp ~/Downloads/DVFPlus_*.7z* data/
 ```
 
-<details>
-<summary>Using a different region? (click to expand)</summary>
+> **Important**: if you download a region other than La Reunion, update `DVF_DEMO_DEPARTMENTS` in `.env` to match (see table above). Mismatched values will result in empty tables.
 
-Update `DVF_DEMO_DEPARTMENTS` in `.env` to match your download:
+<details>
+<summary>More regions and options (click to expand)</summary>
+
+All available regions on Cerema Box: [cerema.app.box.com/v/dvfplus-opendata](https://cerema.app.box.com/v/dvfplus-opendata)
 
 ```bash
-DVF_DEMO_DEPARTMENTS=75          # Paris (from R11_Ile_de_France)
-DVF_DEMO_DEPARTMENTS=75,77,78   # Multiple departments
-DVF_MODE=full                    # All of France (National download required)
+# Examples for .env:
+DVF_DEMO_DEPARTMENTS=974         # La Reunion (default)
+DVF_DEMO_DEPARTMENTS=75          # Paris only (Ile-de-France download)
+DVF_DEMO_DEPARTMENTS=75,92,93    # Paris + Hauts-de-Seine + Seine-Saint-Denis
+DVF_DEMO_DEPARTMENTS=33          # Gironde (Nouvelle Aquitaine download)
+DVF_MODE=full                    # All of France (requires National download)
 ```
-
-Browse all regions at [cerema.app.box.com/v/dvfplus-opendata](https://cerema.app.box.com/v/dvfplus-opendata).
 
 </details>
 
