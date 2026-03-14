@@ -4,14 +4,14 @@
 
 This document describes the partitioning and clustering strategy applied at two layers:
 
-1. **Raw layer** (`dvf_raw.mutation`): integer range partitioning on `anneemut` (year) and clustering on `coddep`, `codtypbien`. Applied at load time by `load_to_bigquery.py`. Implemented in Part 4.
-2. **Mart layer** (`dvf_analytics.fct_transactions`): integer range partitioning on `transaction_year` and clustering on `department_code`, `property_type_code`. Applied by dbt materialization config in `dbt_dvf/models/marts/fct_transactions.sql`. Implemented in Part 5.
+1. **Raw layer** (`dvf_raw.mutation`): integer range partitioning on `anneemut` (year) and clustering on `coddep`, `codtypbien`. Applied at load time by `load_to_bigquery.py`.
+2. **Mart layer** (`dvf_analytics.fct_transactions`): integer range partitioning on `transaction_year` and clustering on `department_code`, `property_type_code`. Applied by dbt materialization config in `dbt_dvf/models/marts/fct_transactions.sql`.
 
 Both layers use the same strategy because the query patterns are consistent across raw exploration and dashboard queries.
 
 ## Raw Layer: Partitioning on `anneemut` and Clustering on `coddep`, `codtypbien`
 
-At the raw layer, the `dvf_raw.mutation` table is partitioned by `anneemut` (integer range, 2014-2025) and clustered by `coddep` and `codtypbien`. This ensures that even exploratory queries on the raw data benefit from partition pruning and block skipping.
+At the raw layer, the `dvf_raw.mutation` table is partitioned by `anneemut` (integer range, 2014-2026) and clustered by `coddep` and `codtypbien`. This ensures that even exploratory queries on the raw data benefit from partition pruning and block skipping.
 
 ```sql
 -- Raw layer query: count mutations per department for 2023
@@ -24,7 +24,7 @@ ORDER BY cnt DESC;
 
 ## Mart Layer: Partitioning by Year (`transaction_year`)
 
-**What it does:** BigQuery physically separates the table into one partition per year (2014 through 2025). When a query includes a `WHERE transaction_year = 2023` filter, BigQuery reads only that single partition and skips all other years entirely.
+**What it does:** BigQuery physically separates the table into one partition per year (2014 through 2026). When a query includes a `WHERE transaction_year = 2023` filter, BigQuery reads only that single partition and skips all other years entirely.
 
 **Why year (not date):** The DVF+ dataset spans 10+ years with millions of rows. Most dashboard queries aggregate by year or filter to a specific year range. Integer range partitioning on the year column is simpler and more efficient than DATE partitioning on the full transaction date, because the year is already extracted as an integer during the dbt transformation.
 

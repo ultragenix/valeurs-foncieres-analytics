@@ -4,7 +4,7 @@
 
 The project dashboard is built with [Google Looker Studio](https://lookerstudio.google.com/), connected directly to BigQuery mart tables in the `dvf_analytics` dataset. It provides interactive visualizations of French real estate transactions (DVF+ data).
 
-**Shareable URL**: `<TODO: paste Looker Studio shareable link here after creation>`
+**Shareable URL**: *After running the pipeline, create the dashboard following the steps below, then paste your shareable Looker Studio URL here.*
 
 ## Data Sources
 
@@ -43,7 +43,7 @@ Shows temporal evolution of transaction volume from 2014 to latest available yea
 - **Sort**: Ascending by year
 - **Insight**: Shows market trends, COVID-19 impact (2020 dip), and recovery patterns
 
-### Tile 3 (Optional): Median Price per m2 by Department (Bar Chart / Map)
+### Tile 3: Median Price per m2 by Department (Bar Chart / Map)
 
 Shows geographic variation in real estate prices.
 
@@ -95,25 +95,34 @@ Shows geographic variation in real estate prices.
 5. Set sort to dimension ascending
 6. Add a title: "Transaction Volume by Year"
 
-### Step 5: Add Filter Control (Optional)
+### Step 5: Create Tile 3 (Median Price per m2 by Department)
+
+1. Click **Add a chart** > **Bar chart** (horizontal) or **Google Maps geo chart**
+2. Set dimension to `department_code`
+3. Set metric to `AVG(price_per_sqm)`
+4. Add a filter: `price_per_sqm IS NOT NULL`
+5. Set sort to metric descending
+6. Add a title: "Average Price per m2 by Department"
+
+### Step 6: Add Filter Control
 
 1. Click **Add a control** > **Drop-down list**
 2. Set control field to `department_code`
 3. Position it at the top of the report
 
-### Step 6: Add Dashboard Title and Metadata
+### Step 7: Add Dashboard Title and Metadata
 
 1. Add a text box with title: "French Real Estate Transactions (DVF+)"
-2. Add subtitle: "Source: DVF+ Open Data (Cerema) | Data: 2014-2024"
+2. Add subtitle: "Source: DVF+ Open Data (Cerema) | Data: 2014-2025"
 3. Add the project name and data refresh date
 
-### Step 7: Share the Dashboard
+### Step 8: Share the Dashboard
 
 1. Click **File** > **Share**
 2. Click **Manage access**
 3. Change to **Anyone with the link can view**
 4. Copy the shareable URL
-5. Paste the URL in this document (replace the TODO above) and in `README.md`
+5. Paste the URL in this document and in `README.md`
 
 ## Validation Queries
 
@@ -150,4 +159,4 @@ ORDER BY avg_price_per_sqm DESC;
 
 ## Screenshot
 
-`<TODO: add screenshot of the dashboard here after creation>`
+*After creating the dashboard, take a screenshot and save it as `docs/dashboard_screenshot.png`, then reference it here.*

@@ -183,7 +183,7 @@ You will also need:
 ### 1. Clone and configure
 
 ```bash
-git clone https://github.com/<your-username>/valeurs-foncieres-analytics.git
+git clone <this-repository-url>
 cd valeurs-foncieres-analytics
 cp .env.example .env
 ```
@@ -417,19 +417,13 @@ make clean              # Tear down everything (containers + GCP resources)
 - **[Etalab](https://www.etalab.gouv.fr/) / [IGN](https://www.ign.fr/)** for the administrative boundary GeoJSON files (Licence Ouverte v2.0)
 - **[DataTalksClub](https://github.com/DataTalksClub/data-engineering-zoomcamp)** for the Data Engineering Zoomcamp course and project framework
 
-## What Would I Do Differently
+## Future Improvements
 
-Reflections after building this end-to-end pipeline:
-
-- **Streaming ingestion instead of a full SQL dump restore.** The current approach downloads a 4--5 GB PostgreSQL dump, restores it into an ephemeral container, and exports to CSV. A streaming approach (e.g., reading directly from Cerema's API or processing the dump in chunks) would reduce memory requirements and eliminate the need for an ephemeral PostgreSQL container entirely.
-
-- **Data quality monitoring with Great Expectations or dbt elementary.** The pipeline has 62 dbt tests for schema validation, but lacks runtime data quality monitoring -- detecting anomalies in row counts, distribution shifts, or freshness issues between runs. A tool like Great Expectations or dbt elementary would add observability to the pipeline.
-
-- **Incremental models for `fct_transactions`.** Currently, `fct_transactions` is rebuilt from scratch on every dbt run. With 20M+ rows in full mode, this is expensive. An incremental materialization strategy (appending only new mutation years) would reduce dbt run times significantly for production workloads.
-
-- **CI/CD with GitHub Actions for dbt model testing.** Adding a CI pipeline that runs `dbt build` on every pull request would catch schema regressions before they reach production. Combined with a staging BigQuery dataset, this would enable safe, tested deployments.
-
-- **Native BigQuery GeoJSON ingestion.** The current approach loads GeoJSON geometry as a STRING column and converts it to GEOGRAPHY in the dbt staging layer via `ST_GEOGFROMGEOJSON()`. BigQuery supports native GeoJSON ingestion which would simplify this two-step process and reduce the staging layer complexity.
+- Streaming ingestion to avoid the ephemeral PostgreSQL dump-and-restore step
+- Runtime data quality monitoring with dbt elementary or Great Expectations
+- Incremental dbt models for `fct_transactions` to reduce rebuild cost at scale
+- CI/CD pipeline (GitHub Actions) for automated `dbt build` on pull requests
+- Native BigQuery GeoJSON ingestion to replace the STRING-to-GEOGRAPHY staging step
 
 ## License
 

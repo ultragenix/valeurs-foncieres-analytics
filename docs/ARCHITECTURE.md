@@ -1,6 +1,6 @@
 # Architecture
 
-Technical architecture for the DVF+ France real estate analytics pipeline. This document covers all implemented components (Parts 1--7).
+Technical architecture for the DVF+ France real estate analytics pipeline.
 
 ## System Overview
 
@@ -259,22 +259,24 @@ Setup requires manual creation in the Looker Studio web UI. Full instructions an
 
 The Kestra DAG (`kestra/flows/dvf_pipeline.yml`) wraps all pipeline steps (ingestion + dbt) into a single orchestrated flow.
 
-**DAG structure (8 tasks):**
+**DAG structure (8 top-level tasks, 2 parallel children):**
 
 | Task | Type | Dependencies | Description |
 |------|------|-------------|-------------|
-| `download_dvf` | Shell | None | Download DVF+ SQL dump from Cerema |
-| `start_postgres` | Shell | `download_dvf` | Start ephemeral PostgreSQL container |
-| `restore_dump` | Shell | `start_postgres` | Restore SQL dump into PostgreSQL (retry on failure) |
-| `export_tables` | Shell | `restore_dump` | Export PostgreSQL tables to CSV |
-| `download_geojson` | Shell | `restore_dump` | Download GeoJSON admin boundaries (parallel with export) |
-| `upload_to_gcs` | Shell | `export_tables`, `download_geojson` | Upload CSV + GeoJSON to GCS |
-| `stop_postgres` | Shell | `upload_to_gcs` | Stop and remove ephemeral PostgreSQL container |
-| `bq_load_and_dbt` | Shell | `stop_postgres` | Load into BigQuery + run dbt build |
+| `download` | Shell | None | Download DVF+ SQL dump from Cerema (retry x3) |
+| `start_postgres` | Shell | `download` | Start ephemeral PostgreSQL container |
+| `restore` | Shell | `start_postgres` | Restore SQL dump into PostgreSQL (retry x3) |
+| `export_and_geojson` | Parallel | `restore` | Parallel wrapper for export + GeoJSON download |
+| `export_tables` | Shell | (parallel child) | Export PostgreSQL tables to CSV |
+| `download_geojson` | Shell | (parallel child) | Download GeoJSON admin boundaries |
+| `stop_postgres` | Shell | `export_and_geojson` | Stop and remove ephemeral PostgreSQL container |
+| `upload` | Shell | `stop_postgres` | Upload CSV + GeoJSON to GCS |
+| `load_bigquery` | Shell | `upload` | Load CSV + GeoJSON from GCS into BigQuery raw tables |
+| `dbt_transform` | Shell | `load_bigquery` | Run dbt deps + run + test |
 
 **Features:**
-- Parallel execution for `export_tables` and `download_geojson` (independent steps)
-- Retry logic on `download_dvf` and `restore_dump` tasks (transient network/database failures)
+- Parallel execution for `export_tables` and `download_geojson` (wrapped in `export_and_geojson` parallel task)
+- Retry logic on `download` and `restore` tasks (transient network/database failures)
 - Mode input (`demo`/`full`) passed as a flow parameter
 - Accessible via Kestra web UI at http://localhost:8080
 

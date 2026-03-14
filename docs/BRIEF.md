@@ -23,7 +23,7 @@ France publishes detailed real estate transaction data (DVF+) covering every pro
 
 ## 2. DATA SOURCES
 
-See `docs/DATA_SOURCES.md` — generated and maintained by the data-analyst agent.
+See `docs/DATA_SOURCES.md` for the full data source reference.
 
 ---
 
@@ -34,7 +34,7 @@ See `docs/DATA_SOURCES.md` — generated and maintained by the data-analyst agen
 2. **Data ingestion pipeline** — Multi-step DAG orchestrated with Kestra:
    - Download DVF+ SQL dump from Cerema Box
    - Restore into temporary PostgreSQL container (Docker)
-   - Export key tables to Parquet/CSV via `COPY TO`
+   - Export key tables to CSV via `COPY TO`
    - Upload exported files to GCS (data lake)
    - Load from GCS into BigQuery raw tables
 3. **BigQuery DWH with optimization** — Tables partitioned by mutation year + clustered by department code and property type (with written explanation of why)
@@ -44,7 +44,7 @@ See `docs/DATA_SOURCES.md` — generated and maintained by the data-analyst agen
    - Marts: `fct_transactions`, `dim_communes`, `dim_property_types`, `dim_dates`
 5. **Looker Studio dashboard** — Minimum 2 tiles as per Zoomcamp specs:
    - Tile 1 (categorical distribution): transaction count by property type (maison, appartement, terrain, local, dépendance)
-   - Tile 2 (temporal distribution): transaction volume and/or median price evolution by year (2014-2024)
+   - Tile 2 (temporal distribution): transaction volume and/or median price evolution by year (2014-2025)
    - Tile 3 (bonus): median price/m² by department
    - All tiles must have clear titles, references (data source, period), and be easy to understand
    - Dashboard accessible via shareable Looker Studio URL (no install needed for reviewers)
@@ -77,7 +77,7 @@ See `docs/DATA_SOURCES.md` — generated and maintained by the data-analyst agen
 | Dashboard | Looker Studio | Free, native BigQuery connector, shareable URL |
 | Containerization | Docker / Docker Compose | Reproducibility for PostgreSQL restore + Kestra + dbt |
 | Language | Python 3.11+ | Ingestion scripts, export orchestration |
-| Temporary DB | PostgreSQL 16 + PostGIS | Restore SQL dump, export to Parquet/CSV (ephemeral container) |
+| Temporary DB | PostgreSQL 16 + PostGIS | Restore SQL dump, export to CSV (ephemeral container) |
 
 ### GCP Project
 - Project ID: `valeurs-foncieres-analytics` (note: GCP may add a suffix, e.g. `valeurs-foncieres-analytics-12345`)
@@ -86,7 +86,7 @@ See `docs/DATA_SOURCES.md` — generated and maintained by the data-analyst agen
 ### Infrastructure Estimates
 | Resource | Estimate |
 |----------|----------|
-| GCS storage | ~5-10 GB (exported Parquet/CSV files) |
+| GCS storage | ~5-10 GB (exported CSV files) |
 | BigQuery storage | ~5-10 GB (raw + staging + marts tables) |
 | BigQuery queries | Free tier (1 TB/month) should suffice |
 | Terraform state | Local (or GCS backend if preferred) |
@@ -182,101 +182,86 @@ The pipeline supports two execution modes via the `DVF_MODE` environment variabl
 
 ---
 
-## 7. PROJECT STRUCTURE (Target)
+## 7. PROJECT STRUCTURE
 
 ```
 valeurs-foncieres-analytics/
-├── .claude/
-│   └── agents/                 # Multi-agent workflow (portable)
 ├── terraform/
-│   ├── main.tf                 # GCS bucket + BigQuery datasets + service account
+│   ├── main.tf                 # GCS bucket + BigQuery datasets + service account + IAM
 │   ├── variables.tf            # Configurable parameters
 │   └── outputs.tf              # Resource references
-├── docker-compose.yml          # PostgreSQL (restore) + Kestra + dbt services
-├── .env.example                # Environment variables template
-├── Makefile                    # Orchestration shortcuts
-├── CLAUDE.md                   # Project conventions for agents
-├── PLAN.md                     # Development plan (generated)
-├── STATE.md                    # Progress tracking (generated)
-├── CORRECTIONS.md              # Bug backlog (generated)
+├── docker-compose.yml          # PostgreSQL (ephemeral) + Kestra v0.21.1
+├── .env.example                # Environment variables template (16 variables)
+├── Makefile                    # 23 build/pipeline targets
+├── CLAUDE.md                   # Project conventions
 │
 ├── docker/
 │   └── postgres/
-│       ├── Dockerfile          # PostgreSQL 16 + PostGIS image
-│       └── export_tables.sh    # Script to COPY tables to CSV/Parquet
+│       └── Dockerfile          # PostgreSQL 16 + PostGIS 3.4
 │
 ├── ingestion/
-│   ├── download_dvf.py         # Download SQL dump from Cerema Box
-│   ├── restore_dump.py         # Orchestrate pg_restore into container
-│   ├── export_to_gcs.py        # Export tables from PG → CSV → upload GCS
+│   ├── __init__.py
+│   ├── config.py               # Shared configuration (loads .env, typed constants)
+│   ├── download_dvf.py         # Download DVF+ SQL dump from Cerema
+│   ├── restore_dump.py         # Restore SQL dump into PostgreSQL
+│   ├── export_tables.py        # Export PostgreSQL tables to CSV
+│   ├── download_geojson.py     # Download admin boundary GeoJSON from Etalab
+│   ├── upload_to_gcs.py        # Upload CSV + GeoJSON to GCS
 │   └── load_to_bigquery.py     # Load from GCS into BigQuery raw tables
 │
 ├── kestra/
 │   └── flows/
-│       └── dvf_pipeline.yml    # End-to-end DAG: download → restore → export → GCS → BigQuery → dbt
+│       └── dvf_pipeline.yml    # End-to-end DAG (8 tasks)
 │
 ├── dbt_dvf/
 │   ├── dbt_project.yml
 │   ├── profiles.yml
-│   ├── models/
-│   │   ├── staging/
-│   │   │   ├── stg_dvf__mutations.sql
-│   │   │   ├── stg_dvf__dispositions.sql
-│   │   │   ├── stg_dvf__locals.sql
-│   │   │   └── stg_dvf__parcelles.sql
-│   │   ├── intermediate/
-│   │   │   └── int_transactions__enriched.sql  # Join mutation+disposition+local+parcelle
-│   │   └── marts/
-│   │       ├── fct_transactions.sql
-│   │       ├── dim_communes.sql
-│   │       ├── dim_property_types.sql
-│   │       └── dim_dates.sql
-│   ├── tests/
+│   ├── packages.yml
 │   ├── macros/
-│   └── seeds/                  # Static reference data (ann_nature_mutation, ann_type_local)
+│   │   └── generate_schema_name.sql
+│   └── models/
+│       ├── sources.yml
+│       ├── staging/            # 6 views
+│       ├── intermediate/       # 1 view
+│       └── marts/              # 5 tables
 │
-├── tests/
-│   ├── test_ingestion.py
-│   ├── test_export.py
-│   └── qa/                     # Independent QA tests
-│
-├── REPORTS/                    # Agent reports
 ├── docs/
 │   ├── BRIEF.md                # This document
+│   ├── DATA_SOURCES.md         # Data reference
 │   ├── ARCHITECTURE.md         # Technical architecture
-│   ├── DATA_DICTIONARY.md      # Table/column reference
 │   ├── PIPELINE.md             # Pipeline documentation
-│   └── DEPLOYMENT.md           # Setup guide
+│   ├── PARTITIONING.md         # Partitioning/clustering rationale
+│   └── DASHBOARD.md            # Dashboard tile specifications
 │
-└── requirements.txt            # Python dependencies
+├── tests/                      # Python unit + QA tests
+└── requirements.txt
 ```
 
 ---
 
-## 8. SUMMARY FOR THE ARCHITECT
+## 8. ARCHITECTURE SUMMARY
 
-**This is a cloud-native data engineering project** that ingests France's complete real estate transaction dataset (DVF+ SQL dump, 17 relational tables, ~20M transactions) into a modern analytics stack on GCP. The pipeline showcases real DE skills: restoring a relational database, extracting and transforming multi-table data, loading into a cloud DWH, and building a dimensional model.
+**This is a cloud-native data engineering project** that ingests France's complete real estate transaction dataset (DVF+ SQL dump, 17 relational tables, ~20M transactions) into a modern analytics stack on GCP. The pipeline demonstrates end-to-end data engineering: restoring a relational database, extracting and transforming multi-table data, loading into a cloud data warehouse, and building a dimensional model for analytics.
 
-The natural order follows the data flow:
+The pipeline follows the natural data flow:
 
-1. **Infrastructure** — Terraform provisions GCS + BigQuery datasets + service account
-2. **Ingestion** — Download DVF+ SQL dump → restore into temporary PostgreSQL container (Docker)
-3. **Export** — Extract key tables from PostgreSQL to Parquet/CSV → upload to GCS (data lake)
-4. **Loading** — Kestra orchestrates loading from GCS to BigQuery raw tables (multi-table)
-5. **Transformation** — dbt joins mutation + disposition + local + parcelle → staging → intermediate → marts (Kimball star schema)
-6. **Exposition** — Looker Studio dashboard connected to BigQuery marts
-7. **Documentation** — README with complete reproduction instructions
+1. **Infrastructure** -- Terraform provisions GCS + BigQuery datasets + service account
+2. **Ingestion** -- Download DVF+ SQL dump, restore into temporary PostgreSQL container (Docker)
+3. **Export** -- Extract key tables from PostgreSQL to CSV, upload to GCS (data lake)
+4. **Loading** -- Load from GCS into BigQuery raw tables (partitioned + clustered)
+5. **Transformation** -- dbt joins mutation + disposition + local + parcelle into staging, intermediate, and mart layers (Kimball star schema)
+6. **Dashboard** -- Looker Studio connected to BigQuery marts
+7. **Documentation** -- README with complete reproduction instructions
 
 **Dual mode strategy**: `DVF_MODE=demo` (default) runs on 1-2 departments for fast reviewer reproduction. `DVF_MODE=full` runs on all France for the production dashboard. Reviewer runs demo locally, sees full data in Looker Studio link.
 
-**Priority**: Parts 1-6 must be functional and end-to-end. Part 7 is the packaging that makes the difference between a good project and a 28/28.
-
 **Hard deadline**: April 21, 2026.
 
-**Main constraint**: Everything in English for peer review. Reproducibility is king — if a reviewer can't run it in 30 minutes, points are lost.
+**Main constraint**: Everything in English for peer review. Reproducibility is critical -- if a reviewer cannot run it in 30 minutes, points are lost.
 
 **Key architectural decisions**:
-- PostgreSQL container is **ephemeral** — used only during ingestion to restore and export. Not part of the runtime stack.
-- PostGIS geometry columns are extracted as lat/lon floats for BigQuery compatibility (BQ has no native PostGIS).
+- PostgreSQL container is **ephemeral** -- used only during ingestion to restore and export. Not part of the runtime stack.
+- PostGIS geometry columns are extracted as lat/lon floats for BigQuery compatibility (BigQuery has no native PostGIS).
 - BigQuery partitioned by `year` (from `datemut`) and clustered by `coddep` (department) + `codtypbien` (property type). This optimizes time-series analysis and geographic filtering.
-- dbt does the real modeling work: joining 4+ source tables into a clean star schema. This is where the DE value lives.
+- dbt does the real modeling work: joining 4+ source tables into a clean star schema. This is where the data engineering value lives.
+- Kestra orchestrates the full pipeline as a single DAG with 8 tasks, including parallel execution of independent steps.

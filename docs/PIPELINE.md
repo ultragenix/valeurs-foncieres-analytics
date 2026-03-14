@@ -1,6 +1,6 @@
 # Pipeline Documentation
 
-Data pipeline for DVF+ France real estate transactions. This document covers all implemented pipeline steps (Parts 2--5, 7), including Kestra orchestration.
+Data pipeline for DVF+ France real estate transactions, including Kestra orchestration.
 
 ## Pipeline Overview
 
