@@ -2,7 +2,7 @@
 
 End-to-end data pipeline for French real estate transaction analytics using the DVF+ dataset (20M+ transactions, 2014--2025).
 
-**Current status:** Parts 1--3 validated (infrastructure, ingestion, export to GCS). See [STATE.md](STATE.md) for detailed progress.
+**Current status:** Parts 1--4 validated (infrastructure, ingestion, export to GCS, BigQuery loading). See [STATE.md](STATE.md) for detailed progress.
 
 ## Problem Statement
 
@@ -38,13 +38,16 @@ ETALAB / IGN                    |                                   |
 +------------+                  |    raw/geojson/*.geojson          |
                                 +----------------+------------------+
                                                  |
-                                load_to_bigquery.py (Part 4)
+                                load_to_bigquery.py                [BUILT]
                                                  |
                                                  v
                                 +-----------------------------------+
                                 |  BigQuery                         |
-                                |                                   |  [BUILT: datasets provisioned]
-                                |  dvf_raw       (raw tables)       |  (Part 4: loading)
+                                |                                   |
+                                |  dvf_raw       (raw tables)       |  [BUILT]
+                                |    mutation (partitioned/clustered)|
+                                |    disposition, local, parcelle...|
+                                |    geo_departments, geo_communes  |
                                 |  dvf_staging   (dbt views)        |  (Part 5: dbt)
                                 |  dvf_analytics (dbt marts)        |  (Part 5: dbt)
                                 |    fct_transactions               |
@@ -119,30 +122,36 @@ The project will implement a **Kimball star schema** in BigQuery with one fact t
 
 ### Data Flow (current state)
 
-The following stages are implemented and validated (Parts 1--3):
+The following stages are implemented and validated (Parts 1--4):
 
 ```
-PostgreSQL (temp)       GCS (raw CSV)
------------------       ---------------
-mutation           -->  raw/dvf/mutation.csv
-disposition        -->  raw/dvf/disposition.csv
-local              -->  raw/dvf/local.csv
-disposition_parcelle->  raw/dvf/disposition_parcelle.csv
-parcelle           -->  raw/dvf/parcelle.csv
-adresse            -->  raw/dvf/adresse.csv
-ann_* (5 tables)   -->  raw/dvf/ann_*.csv
+PostgreSQL (temp)       GCS (raw CSV)                  BigQuery (dvf_raw)
+-----------------       ---------------                ------------------
+mutation           -->  raw/dvf/mutation.csv       -->  mutation (partitioned + clustered)
+disposition        -->  raw/dvf/disposition.csv    -->  disposition
+local              -->  raw/dvf/local.csv          -->  local
+disposition_parcelle->  raw/dvf/disp_parcelle.csv  -->  disposition_parcelle
+parcelle           -->  raw/dvf/parcelle.csv       -->  parcelle
+adresse            -->  raw/dvf/adresse.csv        -->  adresse
+ann_* (5 tables)   -->  raw/dvf/ann_*.csv          -->  ann_* (5 tables)
 
-dept.geojson       -->  raw/geojson/departements-1000m.geojson
-communes.geojson   -->  raw/geojson/communes-1000m.geojson
+dept.geojson       -->  raw/geojson/dept-1000m...  -->  geo_departments
+communes.geojson   -->  raw/geojson/comm-1000m...  -->  geo_communes
 ```
 
-The remaining stages (BigQuery loading, dbt transforms, dashboard) are planned for Parts 4--6.
+The remaining stages (dbt transforms, dashboard, orchestration) are planned for Parts 5--7.
 
-## BigQuery Optimization (planned)
+## BigQuery Optimization
 
-The fact table `fct_transactions` will use **integer range partitioning** on `transaction_year` and **clustering** on `department_code` and `property_type_code`. This combination reduces bytes scanned by up to 95% for typical dashboard queries that filter by year and department.
+Partitioning and clustering are applied at two layers:
 
-For a detailed explanation with query examples and cost impact analysis, see [docs/PARTITIONING.md](docs/PARTITIONING.md).
+**Raw layer** (built in Part 4): The `dvf_raw.mutation` table uses **integer range partitioning** on `anneemut` (year, range 2014--2026) and **clustering** on `coddep` (department code) and `codtypbien` (property type code). This ensures that even exploratory queries on raw data benefit from partition pruning and block skipping.
+
+**Mart layer** (planned for Part 5): The `fct_transactions` fact table will use the same strategy with renamed columns: partition on `transaction_year`, cluster on `department_code` and `property_type_code`.
+
+This combination reduces bytes scanned by up to 95% for typical dashboard queries that filter by year and department.
+
+For a detailed explanation with query examples and cost impact analysis, see [docs/PARTITIONING.md](docs/PARTITIONING.md). For the full technical architecture, see [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md).
 
 ## Prerequisites
 
@@ -202,9 +211,9 @@ This creates:
 - Three BigQuery datasets (`dvf_raw`, `dvf_staging`, `dvf_analytics`)
 - A service account with Storage Object Admin and BigQuery Data Editor/Job User roles
 
-### 4. Run the ingestion pipeline (Parts 2--3)
+### 4. Run the ingestion pipeline (Parts 2--4)
 
-The end-to-end `make run` target is not yet wired (pending Parts 4--7). For now, run each step individually:
+The end-to-end `make run` target is not yet wired (pending Parts 5--7). For now, run each step individually:
 
 ```bash
 # Start the ephemeral PostgreSQL container
@@ -225,8 +234,11 @@ make ingest-geojson
 # Upload CSV + GeoJSON files to GCS
 make ingest-upload
 
-# Stop and remove the ephemeral PostgreSQL container
+# Stop and remove the ephemeral PostgreSQL container (no longer needed)
 make docker-down
+
+# Load CSV + GeoJSON from GCS into BigQuery raw tables
+make bq-load
 ```
 
 **Pipeline modes** (set `DVF_MODE` in `.env`):
@@ -235,6 +247,8 @@ make docker-down
 |------|-------|----------|----------|
 | `demo` (default) | 1--2 departments (Paris + Marseille) | ~10 minutes | Peer review -- proves pipeline works end-to-end |
 | `full` | All of France (~20M transactions) | ~1--2 hours | Production dashboard with complete dataset |
+
+For detailed step descriptions, dependencies, and error handling, see [docs/PIPELINE.md](docs/PIPELINE.md).
 
 ### 5. View the dashboard
 
@@ -287,13 +301,13 @@ valeurs-foncieres-analytics/
 │
 ├── ingestion/                   # Python ingestion package (Parts 2-4)
 │   ├── __init__.py              # Package marker
-│   ├── config.py                # Shared configuration (loads .env, exposes typed constants)
+│   ├── config.py                # Shared configuration (loads .env, typed constants, connections)
 │   ├── download_dvf.py          # Download DVF+ SQL dump from Cerema (auto or manual .7z/.sql)
 │   ├── restore_dump.py          # Execute SQL files via psql, verify tables, demo filtering
 │   ├── export_tables.py         # COPY tables to CSV (geometry->lat/lon, array->scalar handling)
 │   ├── download_geojson.py      # Download admin boundary GeoJSON from Etalab (dept + communes)
 │   ├── upload_to_gcs.py         # Upload CSV + GeoJSON to GCS (raw/dvf/ and raw/geojson/)
-│   └── load_to_bigquery.py      # (planned) Load from GCS into BigQuery raw tables
+│   └── load_to_bigquery.py      # Load CSV + GeoJSON from GCS into BigQuery raw tables
 │
 ├── kestra/                      # (planned) Kestra orchestration flows
 │   └── flows/
@@ -305,6 +319,8 @@ valeurs-foncieres-analytics/
 ├── docs/
 │   ├── BRIEF.md                 # Project requirements and scope
 │   ├── DATA_SOURCES.md          # DVF+ data reference (17 tables, columns, joins, quality rules)
+│   ├── ARCHITECTURE.md          # Technical architecture deep-dive
+│   ├── PIPELINE.md              # Pipeline documentation (steps, dependencies)
 │   └── PARTITIONING.md          # BigQuery partitioning/clustering rationale
 │
 └── tests/                       # Unit tests (not tracked in git)
@@ -313,6 +329,7 @@ valeurs-foncieres-analytics/
     ├── test_export_tables.py    # CSV export, query building, geometry/array handling
     ├── test_download_geojson.py # GeoJSON download, validation, skip logic
     ├── test_upload_to_gcs.py    # GCS upload, file collection, bucket validation
+    ├── test_bigquery_loading.py # 57 tests: CSV/GeoJSON loading, partitioning, config validation
     └── qa/                      # Independent QA audit tests
 ```
 
@@ -324,8 +341,8 @@ This project targets the maximum score of **28/28** across all 7 evaluation crit
 |---|-----------|--------|----------------|--------|
 | 1 | **Problem description** | 4/4 | Clearly described in this README: raw DVF+ dump transformed into an analytics-ready star schema | Done |
 | 2 | **Cloud** | 4/4 | GCP infrastructure provisioned with Terraform (GCS + BigQuery + service account + IAM) | Done |
-| 3 | **Data ingestion** | 4/4 | End-to-end DAG orchestrated with Kestra: download, restore, export, upload to GCS, load to BigQuery | In progress (scripts built, Kestra DAG pending) |
-| 4 | **Data warehouse** | 4/4 | BigQuery with integer range partitioning (year) + clustering (department, property type) -- see [docs/PARTITIONING.md](docs/PARTITIONING.md) | Planned (Part 4) |
+| 3 | **Data ingestion** | 4/4 | End-to-end DAG orchestrated with Kestra: download, restore, export, upload to GCS, load to BigQuery | In progress (all scripts built, Kestra DAG pending) |
+| 4 | **Data warehouse** | 4/4 | BigQuery with integer range partitioning (year) + clustering (department, property type) -- see [docs/PARTITIONING.md](docs/PARTITIONING.md) | Done (raw layer partitioned/clustered) |
 | 5 | **Transformations** | 4/4 | dbt-bigquery: multi-table staging, intermediate join, Kimball star schema marts | Planned (Part 5) |
 | 6 | **Dashboard** | 4/4 | Looker Studio with 2+ tiles: transaction count by property type, price evolution by year, price/m2 by department | Planned (Part 6) |
 | 7 | **Reproducibility** | 4/4 | Makefile + Docker + Terraform + `.env.example` + step-by-step README; `make setup && make terraform-apply && make run` | In progress |
@@ -378,9 +395,10 @@ make ingest-restore     # Restore DVF+ SQL dump into PostgreSQL container
 make ingest-export      # Export PostgreSQL tables to CSV
 make ingest-geojson     # Download GeoJSON admin boundaries from Etalab
 make ingest-upload      # Upload CSV + GeoJSON to GCS
+make bq-load            # Load CSV + GeoJSON from GCS into BigQuery raw tables
 make run                # Run full pipeline (not yet wired -- placeholder)
 make dbt-run            # Run dbt transformations (not yet configured -- placeholder)
-make test               # Run all tests (not yet wired -- placeholder)
+make test               # Run all tests (uv run python -m pytest tests/ -v)
 make clean              # Tear down everything (containers + GCP resources)
 ```
 
