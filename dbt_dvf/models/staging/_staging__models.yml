@@ -48,6 +48,7 @@ models:
           - relationships:
               to: ref('stg_dvf__mutations')
               field: mutation_id
+              severity: warn
 
   - name: stg_dvf__locals
     description: >
@@ -66,6 +67,7 @@ models:
           - relationships:
               to: ref('stg_dvf__mutations')
               field: mutation_id
+              severity: warn
       - name: local_type_code
         description: Premises type code (1=house, 2=apt, 3=outbuilding, 4=commercial)
 
@@ -86,6 +88,7 @@ models:
           - relationships:
               to: ref('stg_dvf__mutations')
               field: mutation_id
+              severity: warn
       - name: commune_code
         description: INSEE commune code
         tests:

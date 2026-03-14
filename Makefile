@@ -67,8 +67,8 @@ pipeline-local: ## Run full pipeline locally (sequential, no Kestra required)
 	@echo "=== DVF Pipeline (local sequential mode) ==="
 	$(MAKE) ingest-download
 	$(MAKE) docker-up
-	@echo "Waiting for PostgreSQL to be ready..."
-	@docker compose exec postgres sh -c 'until pg_isready -U $${POSTGRES_USER:-dvf} -d $${POSTGRES_DB:-dvf}; do sleep 1; done'
+	@echo "Waiting for PostgreSQL to be ready (TCP)..."
+	@docker compose exec postgres sh -c 'until pg_isready -h localhost -U $${POSTGRES_USER:-dvf} -d $${POSTGRES_DB:-dvf}; do sleep 1; done'
 	$(MAKE) ingest-restore
 	$(MAKE) ingest-export
 	$(MAKE) ingest-geojson

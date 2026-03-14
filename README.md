@@ -195,11 +195,29 @@ Edit `.env` with your GCP project details:
 GCP_PROJECT_ID=your-gcp-project-id
 GCS_BUCKET_NAME=your-project-id-dvf-data-lake
 GOOGLE_APPLICATION_CREDENTIALS=./gcp-sa-key.json
+
+# Demo mode: choose which department(s) to load (default: 75,13)
+# Use the department code matching your downloaded region (e.g. 974 for La Reunion)
+DVF_DEMO_DEPARTMENTS=75,13
 ```
 
-Place your GCP service account key at `./gcp-sa-key.json`.
+### 2. Create a GCP service account
 
-### 2. Install dependencies and initialize Terraform
+1. Go to [console.cloud.google.com](https://console.cloud.google.com/) and create a project (or use an existing one)
+2. Enable the required APIs: **BigQuery API** and **Cloud Storage API**
+3. Go to **IAM & Admin > Service Accounts** and create a new service account
+4. Grant the following roles:
+   - `Storage Object Admin` (for GCS bucket read/write)
+   - `BigQuery Data Editor` (for creating tables and loading data)
+   - `BigQuery Job User` (for running queries)
+5. Create a JSON key for the service account and save it as `./gcp-sa-key.json` in the project root
+
+```bash
+# The file should be at the project root (it is gitignored)
+cp ~/Downloads/your-service-account-key.json ./gcp-sa-key.json
+```
+
+### 3. Install dependencies and initialize Terraform
 
 ```bash
 make setup
@@ -207,7 +225,7 @@ make setup
 
 This runs three steps: copies `.env.example` to `.env` (if not already done), installs Python dependencies with `uv pip install -r requirements.txt`, and runs `terraform init` in the `terraform/` directory.
 
-### 3. Provision GCP infrastructure
+### 4. Provision GCP infrastructure
 
 ```bash
 make terraform-apply
@@ -218,13 +236,49 @@ This creates:
 - Three BigQuery datasets (`dvf_raw`, `dvf_staging`, `dvf_analytics`)
 - A service account with Storage Object Admin and BigQuery Data Editor/Job User roles
 
-### 4. Run the full pipeline
+### 5. Download the DVF+ data (manual step)
+
+The DVF+ SQL dump is hosted on Cerema Box and requires a manual download:
+
+1. Go to [cerema.app.box.com/v/dvfplus-opendata](https://cerema.app.box.com/v/dvfplus-opendata)
+2. Navigate to the latest folder (e.g. `octobre_2025`)
+3. Download the `.7z` archive for your target region:
+
+| Region | File size | Department codes | Use case |
+|--------|-----------|-----------------|----------|
+| `R04_La_Reunion` | ~38 MB | `974` | Fastest demo (~5 min) |
+| `R11_Ile_de_France` | ~700 MB | `75,77,78,91,92,93,94,95` | Paris region |
+| `National` (11 files) | ~4-5 GB | All | Full France production |
+
+4. Place the downloaded `.7z` file(s) in the `data/` directory:
+
+```bash
+mkdir -p data
+cp ~/Downloads/DVFPlus_*.7z* data/
+```
+
+5. Update `DVF_DEMO_DEPARTMENTS` in `.env` to match your downloaded region:
+
+```bash
+# For La Reunion:
+DVF_DEMO_DEPARTMENTS=974
+
+# For Ile-de-France (Paris only):
+DVF_DEMO_DEPARTMENTS=75
+
+# For full France (no filtering):
+DVF_MODE=full
+```
+
+> **Note**: The automatic download (`make ingest-download`) attempts to fetch the dump via HTTP but may fail if the Cerema URL has changed. The manual download is the reliable method.
+
+### 6. Run the full pipeline
 
 ```bash
 make run
 ```
 
-This single command executes the entire pipeline sequentially: downloads the DVF+ SQL dump, starts an ephemeral PostgreSQL container, restores and exports the data to CSV, downloads GeoJSON administrative boundaries, uploads everything to GCS, loads into BigQuery, runs all dbt transformations and tests, then shuts down PostgreSQL. In demo mode (default), the pipeline completes in approximately 10 minutes.
+This single command executes the entire pipeline sequentially: extracts and restores the DVF+ SQL dump, starts an ephemeral PostgreSQL container, exports the data to CSV, downloads GeoJSON administrative boundaries, uploads everything to GCS, loads into BigQuery, runs all dbt transformations and tests, then shuts down PostgreSQL.
 
 For Kestra-based orchestration (optional), start Kestra with `make docker-up-kestra`, deploy the flow with `make kestra-deploy`, and trigger via `make pipeline`.
 
@@ -232,12 +286,12 @@ For Kestra-based orchestration (optional), start Kestra with `make docker-up-kes
 
 | Mode | Scope | Duration | Use Case |
 |------|-------|----------|----------|
-| `demo` (default) | 1--2 departments (Paris + Marseille) | ~10 minutes | Peer review -- proves pipeline works end-to-end |
-| `full` | All of France (~20M transactions) | ~1--2 hours | Production dashboard with complete dataset |
+| `demo` (default) | Configured departments only | ~5-15 minutes | Peer review -- proves pipeline works end-to-end |
+| `full` | All of France (~20M transactions) | ~1-2 hours | Production dashboard with complete dataset |
 
 For detailed step descriptions, dependencies, and error handling, see [docs/PIPELINE.md](docs/PIPELINE.md).
 
-### 5. View the dashboard
+### 7. View the dashboard
 
 The Looker Studio dashboard connects directly to the `dvf_analytics` BigQuery dataset. Setup instructions are in [docs/DASHBOARD.md](docs/DASHBOARD.md).
 
@@ -347,7 +401,7 @@ This project targets the maximum score of **28/28** across all 7 evaluation crit
 | 4 | **Data warehouse** | 4/4 | BigQuery with integer range partitioning (year) + clustering (department, property type) at both raw and mart layers -- see [docs/PARTITIONING.md](docs/PARTITIONING.md) | Done |
 | 5 | **Transformations** | 4/4 | dbt-bigquery: 6 staging views, 1 intermediate join, 5 Kimball star schema mart tables, 62 data tests | Done |
 | 6 | **Dashboard** | 4/4 | Looker Studio with 2+ tiles: transaction count by property type, price evolution by year, price/m2 by department. See [docs/DASHBOARD.md](docs/DASHBOARD.md) | Done |
-| 7 | **Reproducibility** | 4/4 | Makefile + Docker + Terraform + `.env.example` + step-by-step README; `make setup && make terraform-apply && make run` | Done |
+| 7 | **Reproducibility** | 4/4 | Makefile + Docker + Terraform + `.env.example` + step-by-step README; `make setup && make terraform-apply && make run` (manual DVF+ download required -- see Quick Start step 4) | Done |
 
 ## Data Sources
 

@@ -69,11 +69,27 @@ PSQL_TIMEOUT_SECONDS: int = 600
 # ---------------------------------------------------------------------------
 # Helpers
 # ---------------------------------------------------------------------------
+def _sort_sql_files(files: list[Path]) -> list[Path]:
+    """Sort SQL files so that schema/init files run before department data.
+
+    DVF+ dumps typically contain ``dvf_initial.sql`` (schemas + parent tables)
+    and ``dvf_departements.sql`` (child tables with INHERITS + data).
+    The initial file must run first.
+    """
+    def priority(path: Path) -> tuple[int, str]:
+        name = path.name.lower()
+        if "initial" in name or "init" in name:
+            return (0, name)
+        return (1, name)
+
+    return sorted(files, key=priority)
+
+
 def _find_sql_files(directory: Path) -> list[Path]:
-    """Return .sql files in *directory*, sorted by name."""
+    """Return .sql files in *directory*, ordered for correct execution."""
     if not directory.exists():
         return []
-    return sorted(directory.glob("*.sql"))
+    return _sort_sql_files(list(directory.glob("*.sql")))
 
 
 def _build_psql_env() -> dict[str, str]:
@@ -129,24 +145,46 @@ def _ensure_postgis(conn: psycopg2.extensions.connection) -> None:
     logger.info("PostGIS extension ensured.")
 
 
-def _list_public_tables(conn: psycopg2.extensions.connection) -> list[str]:
-    """Return names of all tables in the public schema."""
-    query = """
+DVF_SCHEMAS: list[str] = ["public", "dvf", "dvf_annexe"]
+
+
+def _list_tables(conn: psycopg2.extensions.connection) -> list[str]:
+    """Return names of all tables in DVF-relevant schemas."""
+    placeholders = ", ".join(["%s"] * len(DVF_SCHEMAS))
+    query = f"""
         SELECT table_name
         FROM information_schema.tables
-        WHERE table_schema = 'public'
+        WHERE table_schema IN ({placeholders})
           AND table_type = 'BASE TABLE'
         ORDER BY table_name;
     """
     with conn.cursor() as cur:
-        cur.execute(query)
+        cur.execute(query, DVF_SCHEMAS)
         return [row[0] for row in cur.fetchall()]
+
+
+def _resolve_schema(conn: psycopg2.extensions.connection, table: str) -> str | None:
+    """Find the schema containing *table*, searching DVF-relevant schemas."""
+    placeholders = ", ".join(["%s"] * len(DVF_SCHEMAS))
+    query = f"""
+        SELECT table_schema
+        FROM information_schema.tables
+        WHERE table_name = %s
+          AND table_schema IN ({placeholders})
+        LIMIT 1;
+    """
+    with conn.cursor() as cur:
+        cur.execute(query, [table, *DVF_SCHEMAS])
+        row = cur.fetchone()
+        return row[0] if row else None
 
 
 def _count_rows(conn: psycopg2.extensions.connection, table: str) -> int:
     """Return the row count for *table*."""
+    schema = _resolve_schema(conn, table)
+    qualified = f"{schema}.{table}" if schema else table
     with conn.cursor() as cur:
-        cur.execute(f"SELECT COUNT(*) FROM {table};")  # noqa: S608 -- table name from constant list
+        cur.execute(f"SELECT COUNT(*) FROM {qualified};")  # noqa: S608
         result = cur.fetchone()
         return result[0] if result else 0
 
@@ -155,15 +193,16 @@ def _table_has_column(
     conn: psycopg2.extensions.connection, table: str, column: str
 ) -> bool:
     """Check whether *table* has a column named *column*."""
-    query = """
+    placeholders = ", ".join(["%s"] * len(DVF_SCHEMAS))
+    query = f"""
         SELECT 1
         FROM information_schema.columns
-        WHERE table_schema = 'public'
+        WHERE table_schema IN ({placeholders})
           AND table_name = %s
           AND column_name = %s;
     """
     with conn.cursor() as cur:
-        cur.execute(query, (table, column))
+        cur.execute(query, [*DVF_SCHEMAS, table, column])
         return cur.fetchone() is not None
 
 
@@ -176,9 +215,11 @@ def _delete_outside_departments(
     departments: list[str],
 ) -> None:
     """Delete rows from *table* where coddep is not in *departments*."""
+    schema = _resolve_schema(conn, table)
+    qualified = f"{schema}.{table}" if schema else table
     placeholders = ", ".join(["%s"] * len(departments))
     delete_sql = (
-        f"DELETE FROM {table} WHERE coddep NOT IN ({placeholders});"  # noqa: S608
+        f"DELETE FROM {qualified} WHERE coddep NOT IN ({placeholders});"  # noqa: S608
     )
     with conn.cursor() as cur:
         cur.execute(delete_sql, departments)
@@ -241,8 +282,8 @@ def _verify_restore(conn: psycopg2.extensions.connection) -> bool:
 
     Returns True if verification passes, False otherwise.
     """
-    tables = _list_public_tables(conn)
-    logger.info("Tables found in public schema (%d): %s", len(tables), tables)
+    tables = _list_tables(conn)
+    logger.info("Tables found (%d): %s", len(tables), tables)
 
     if not _check_principal_tables(tables):
         return False
@@ -324,6 +365,9 @@ def _restore_and_verify(sql_files: list[Path]) -> None:
 
     conn = get_pg_connection()
     try:
+        with conn.cursor() as cur:
+            cur.execute("SET search_path TO dvf, dvf_annexe, public;")
+        conn.commit()
         success = _post_restore_processing(conn)
     finally:
         conn.close()

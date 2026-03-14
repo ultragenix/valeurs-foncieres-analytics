@@ -127,10 +127,21 @@ def _get_bq_client() -> Any:
 # Job config builders
 # ---------------------------------------------------------------------------
 def _build_geojson_schema() -> list[Any]:
-    """Return a minimal schema with a geometry STRING field."""
+    """Return a schema for GeoJSON features with all STRING fields.
+
+    All property fields are forced to STRING to prevent autodetect from
+    misinterpreting codes like '2A001' (Corse) as integers.
+    """
     from google.cloud import bigquery  # noqa: WPS433
 
-    return [bigquery.SchemaField("geometry", "STRING", mode="NULLABLE")]
+    return [
+        bigquery.SchemaField("code", "STRING", mode="NULLABLE"),
+        bigquery.SchemaField("nom", "STRING", mode="NULLABLE"),
+        bigquery.SchemaField("departement", "STRING", mode="NULLABLE"),
+        bigquery.SchemaField("region", "STRING", mode="NULLABLE"),
+        bigquery.SchemaField("epci", "STRING", mode="NULLABLE"),
+        bigquery.SchemaField("geometry", "STRING", mode="NULLABLE"),
+    ]
 
 
 def _build_csv_config(table_name: str) -> Any:
@@ -165,10 +176,9 @@ def _build_geojson_config() -> Any:
 
     return bigquery.LoadJobConfig(
         source_format=bigquery.SourceFormat.NEWLINE_DELIMITED_JSON,
-        autodetect=True,
         write_disposition=bigquery.WriteDisposition.WRITE_TRUNCATE,
         schema=_build_geojson_schema(),
-        schema_update_options=[bigquery.SchemaUpdateOption.ALLOW_FIELD_ADDITION],
+        ignore_unknown_values=True,
     )
 
 

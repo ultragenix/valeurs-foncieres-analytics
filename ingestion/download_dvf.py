@@ -53,10 +53,12 @@ def _find_existing_sql_files(directory: Path) -> list[Path]:
 
 
 def _find_existing_archives(directory: Path) -> list[Path]:
-    """Return all .7z files in the given directory."""
+    """Return all .7z or .7z.001 (multi-part) archives in the given directory."""
     if not directory.exists():
         return []
-    return sorted(directory.glob(f"*{ARCHIVE_SUFFIX}"))
+    archives = set(directory.glob(f"*{ARCHIVE_SUFFIX}"))
+    archives.update(directory.glob(f"*{ARCHIVE_SUFFIX}.001"))
+    return sorted(archives)
 
 
 def _download_with_progress(url: str, destination: Path) -> bool:
@@ -79,10 +81,11 @@ def _validate_archive_members(names: list[str]) -> None:
 
 
 def _extract_7z(archive_path: Path, target_dir: Path) -> list[Path]:
-    """Extract a .7z archive into *target_dir* and return extracted paths.
+    """Extract a .7z archive into *target_dir* and return .sql file paths.
 
-    Validates member filenames before extraction to prevent path traversal.
-    Requires the ``py7zr`` package.
+    Handles nested archives (.7z.001 containing a .7z) and SQL files inside
+    subdirectories. Validates member filenames before extraction to prevent
+    path traversal. Requires the ``py7zr`` package.
     """
     try:
         import py7zr  # noqa: WPS433 -- lazy import, optional dep
@@ -99,9 +102,39 @@ def _extract_7z(archive_path: Path, target_dir: Path) -> list[Path]:
         _validate_archive_members(archive.getnames())
         archive.extractall(path=target_dir)
 
-    extracted = sorted(target_dir.glob("*.sql"))
-    logger.info("Extracted %d .sql file(s): %s", len(extracted), extracted)
-    return extracted
+    extracted = _collect_sql_files(target_dir)
+    if extracted:
+        return extracted
+
+    # Handle nested archives (e.g. .7z.001 containing an inner .7z)
+    return _extract_nested_archives(target_dir)
+
+
+def _collect_sql_files(directory: Path) -> list[Path]:
+    """Find .sql files recursively and move them to the top-level directory."""
+    sql_files: list[Path] = []
+    for sql_file in sorted(directory.rglob("*.sql")):
+        if sql_file.parent != directory:
+            dest = directory / sql_file.name
+            shutil.move(str(sql_file), str(dest))
+            sql_files.append(dest)
+        else:
+            sql_files.append(sql_file)
+    if sql_files:
+        logger.info("Found %d .sql file(s): %s", len(sql_files), sql_files)
+    return sql_files
+
+
+def _extract_nested_archives(directory: Path) -> list[Path]:
+    """Extract any inner .7z archives found after first extraction."""
+    inner_archives = sorted(directory.glob("*.7z"))
+    sql_files: list[Path] = []
+    for inner in inner_archives:
+        logger.info("Found nested archive: %s", inner.name)
+        sql_files.extend(_extract_7z(inner, directory))
+    if not sql_files:
+        logger.warning("No .sql files found after extraction.")
+    return sql_files
 
 
 # ---------------------------------------------------------------------------

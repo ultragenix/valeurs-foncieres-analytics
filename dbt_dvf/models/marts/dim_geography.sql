@@ -12,8 +12,8 @@ WITH departments AS (
         department_code,
         department_name,
         geometry,
-        SAFE.ST_Y(SAFE.ST_CENTROID(geometry)) AS centroid_lat,
-        SAFE.ST_X(SAFE.ST_CENTROID(geometry)) AS centroid_lon
+        ST_Y(ST_CENTROID(geometry)) AS centroid_lat,
+        ST_X(ST_CENTROID(geometry)) AS centroid_lon
     FROM {{ ref('stg_geo__departments') }}
 
 ),
@@ -32,8 +32,8 @@ communes AS (
         END AS department_code,
         CAST(NULL AS STRING) AS department_name,
         gc.geometry,
-        SAFE.ST_Y(SAFE.ST_CENTROID(gc.geometry)) AS centroid_lat,
-        SAFE.ST_X(SAFE.ST_CENTROID(gc.geometry)) AS centroid_lon
+        ST_Y(ST_CENTROID(gc.geometry)) AS centroid_lat,
+        ST_X(ST_CENTROID(gc.geometry)) AS centroid_lon
     FROM {{ ref('stg_geo__communes') }} AS gc
 
 ),

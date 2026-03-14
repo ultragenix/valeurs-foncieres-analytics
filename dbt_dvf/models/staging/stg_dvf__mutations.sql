@@ -17,7 +17,6 @@ cleaned AS (
         CAST(libnatmut AS STRING) AS mutation_nature_label,
         CAST(vefa AS BOOL) AS is_vefa,
         CAST(coddep AS STRING) AS department_code,
-        CAST(codcomm AS STRING) AS commune_code_main,
         CAST(codinsee AS STRING) AS insee_code,
         CAST(valeurfonc AS FLOAT64) AS transaction_price_eur,
         CAST(nbdispo AS INT64) AS disposition_count,

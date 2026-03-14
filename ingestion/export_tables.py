@@ -58,19 +58,30 @@ ALL_EXPORT_TABLES: list[str] = [
 # ---------------------------------------------------------------------------
 # Column introspection
 # ---------------------------------------------------------------------------
+DVF_SCHEMAS: list[str] = ["public", "dvf", "dvf_annexe"]
+
+
+def _set_search_path(conn: psycopg2.extensions.connection) -> None:
+    """Set search_path to include all DVF-relevant schemas."""
+    with conn.cursor() as cur:
+        cur.execute("SET search_path TO dvf, dvf_annexe, public;")
+    conn.commit()
+
+
 def _get_table_columns(
     conn: psycopg2.extensions.connection, table_name: str
 ) -> list[str]:
     """Return the ordered list of column names for *table_name*."""
-    query = """
+    placeholders = ", ".join(["%s"] * len(DVF_SCHEMAS))
+    query = f"""
         SELECT column_name
         FROM information_schema.columns
-        WHERE table_schema = 'public'
+        WHERE table_schema IN ({placeholders})
           AND table_name = %s
         ORDER BY ordinal_position;
     """
     with conn.cursor() as cur:
-        cur.execute(query, (table_name,))
+        cur.execute(query, [*DVF_SCHEMAS, table_name])
         return [row[0] for row in cur.fetchall()]
 
 
@@ -105,26 +116,59 @@ def _build_where_clause(
     return f" WHERE coddep IN ({placeholders})"
 
 
-def _build_mutation_query(departments: list[str] | None) -> str:
+# Columns that need special handling in mutation export.
+_MUTATION_ARRAY_COLS: dict[str, str] = {
+    "l_codinsee": "l_codinsee[1] AS codinsee",
+    "l_section": "l_section[1] AS section",
+    "l_par": "l_par[1] AS par",
+    "l_artcgi": "l_artcgi[1] AS artcgi",
+}
+
+_MUTATION_GEOM_COLS: dict[str, str] = {
+    "geomlocmut": (
+        "ST_Y(ST_Transform(ST_Centroid(geomlocmut), 4326)) AS latitude,"
+        " ST_X(ST_Transform(ST_Centroid(geomlocmut), 4326)) AS longitude"
+    ),
+}
+
+_MUTATION_SKIP_COLS: set[str] = {
+    *_MUTATION_ARRAY_COLS.keys(),
+    *_MUTATION_GEOM_COLS.keys(),
+    "geomparmut",
+    "geompar",
+    "codservch",
+    "refdoc",
+    "idmutinvar",
+    "l_dcnt",
+    "l_idpar",
+    "l_idparmut",
+    "l_idlocmut",
+}
+
+
+def _build_mutation_query(
+    conn: psycopg2.extensions.connection,
+    departments: list[str] | None,
+) -> str:
     """Build the SELECT query for the mutation table.
 
-    Extracts geometry as lat/lon floats and array columns as scalars.
+    Dynamically adapts to the columns present in the actual database,
+    extracting geometry as lat/lon floats and array columns as scalars.
     """
+    all_cols = _get_table_columns(conn, "mutation")
+    select_parts: list[str] = []
+
+    for col in all_cols:
+        if col in _MUTATION_SKIP_COLS:
+            if col in _MUTATION_ARRAY_COLS:
+                select_parts.append(_MUTATION_ARRAY_COLS[col])
+            elif col in _MUTATION_GEOM_COLS:
+                select_parts.append(_MUTATION_GEOM_COLS[col])
+            continue
+        select_parts.append(col)
+
     where = _build_where_clause("mutation", departments)
-    return (
-        "SELECT idmutation, idopendata, datemut, anneemut, moismut,"
-        " idnatmut, libnatmut, vefa, coddep, codcomm, codcommune,"
-        " l_codinsee[1] AS codinsee, valeurfonc, nbdispo, nblot,"
-        " nbcomm, nbsection, l_section[1] AS section,"
-        " nbpar, l_par[1] AS par, nbparmut, nbartcgi,"
-        " l_artcgi[1] AS artcgi, nblocmut, nblocmai, nblocapt,"
-        " nblocact, nblocdep, nbloccom,"
-        " codtypbien, libtypbien, sbati, sbatmai, sbatapt, sbatact,"
-        " sterr, nbsuf, nbvolmut,"
-        " ST_Y(ST_Transform(geomlocmut, 4326)) AS latitude,"
-        " ST_X(ST_Transform(geomlocmut, 4326)) AS longitude"
-        f" FROM mutation{where}"
-    )
+    return f"SELECT {', '.join(select_parts)} FROM mutation{where}"
 
 
 def _build_parcelle_query(
@@ -211,7 +255,7 @@ def _build_query_for_table(
 ) -> str:
     """Return the appropriate SQL query for exporting *table_name*."""
     if table_name == "mutation":
-        return _build_mutation_query(departments)
+        return _build_mutation_query(conn, departments)
     if table_name == "parcelle":
         return _build_parcelle_query(conn, departments)
     return _build_simple_query(table_name, departments)
@@ -220,15 +264,16 @@ def _build_query_for_table(
 def _table_exists(
     conn: psycopg2.extensions.connection, table_name: str
 ) -> bool:
-    """Check whether *table_name* exists in the public schema."""
-    query = """
+    """Check whether *table_name* exists in any DVF-relevant schema."""
+    placeholders = ", ".join(["%s"] * len(DVF_SCHEMAS))
+    query = f"""
         SELECT 1
         FROM information_schema.tables
-        WHERE table_schema = 'public'
+        WHERE table_schema IN ({placeholders})
           AND table_name = %s;
     """
     with conn.cursor() as cur:
-        cur.execute(query, (table_name,))
+        cur.execute(query, [*DVF_SCHEMAS, table_name])
         return cur.fetchone() is not None
 
 
@@ -242,6 +287,7 @@ def export_tables() -> None:
 
     conn = get_pg_connection()
     try:
+        _set_search_path(conn)
         _export_all_tables(conn, departments)
     finally:
         conn.close()

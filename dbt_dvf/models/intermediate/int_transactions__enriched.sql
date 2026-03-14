@@ -58,7 +58,7 @@ enriched AS (
         m.mutation_nature_label,
         m.is_vefa,
         m.department_code,
-        COALESCE(p.commune_code, m.commune_code_main) AS commune_code,
+        COALESCE(p.commune_code, m.insee_code) AS commune_code,
         m.insee_code,
         m.transaction_price_eur,
         m.property_type_code,
