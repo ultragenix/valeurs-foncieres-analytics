@@ -23,7 +23,12 @@ cleaned AS (
         CAST(noplan AS STRING) AS plan_number,
         SAFE.PARSE_DATE('%Y-%m-%d', CAST(datemut AS STRING)) AS transaction_date,
         CAST(anneemut AS INT64) AS transaction_year,
-        CAST(parcvendue AS BOOL) AS is_parcel_sold,
+        CASE UPPER(CAST(parcvendue AS STRING))
+            WHEN 'T' THEN TRUE
+            WHEN 'TRUE' THEN TRUE
+            WHEN '1' THEN TRUE
+            ELSE FALSE
+        END AS is_parcel_sold,
         CAST(dcntsol AS FLOAT64) AS built_land_area_sqm,
         CAST(dcntagri AS FLOAT64) AS agricultural_land_area_sqm,
         CAST(dcntnat AS FLOAT64) AS natural_land_area_sqm

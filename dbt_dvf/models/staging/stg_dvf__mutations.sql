@@ -15,7 +15,12 @@ cleaned AS (
         CAST(moismut AS INT64) AS transaction_month,
         CAST(idnatmut AS INT64) AS mutation_nature_id,
         CAST(libnatmut AS STRING) AS mutation_nature_label,
-        CAST(vefa AS BOOL) AS is_vefa,
+        CASE UPPER(CAST(vefa AS STRING))
+            WHEN 'T' THEN TRUE
+            WHEN 'TRUE' THEN TRUE
+            WHEN '1' THEN TRUE
+            ELSE FALSE
+        END AS is_vefa,
         CAST(coddep AS STRING) AS department_code,
         CAST(codinsee AS STRING) AS insee_code,
         CAST(valeurfonc AS FLOAT64) AS transaction_price_eur,

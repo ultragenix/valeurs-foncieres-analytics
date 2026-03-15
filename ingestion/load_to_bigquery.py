@@ -5,6 +5,10 @@ Loads DVF+ CSV exports into ``dvf_raw`` with autodetect schema.  The
 clustering on ``coddep`` + ``codtypbien``.  GeoJSON administrative
 boundary files are parsed and loaded as BigQuery tables with geometry
 stored as a JSON string (converted to GEOGRAPHY in the dbt layer).
+
+Supports both flat layout (``raw/dvf/mutation.csv``) and chunked layout
+(``raw/dvf/mutation/chunk_001.csv``).  Chunked tables are loaded via
+BigQuery wildcard URIs.
 """
 
 from __future__ import annotations
@@ -144,10 +148,52 @@ def _build_geojson_schema() -> list[Any]:
     ]
 
 
-def _build_csv_config(table_name: str) -> Any:
-    """Build a LoadJobConfig for CSV loading.
+HEADER_READ_BYTES: int = 4096
 
-    The mutation table gets range partitioning and clustering.
+
+def _read_csv_header_from_gcs(gcs_client: Any, blob_name: str) -> list[str]:
+    """Read the first line of a CSV blob to extract column names.
+
+    Downloads only the first ``HEADER_READ_BYTES`` bytes instead of
+    the entire blob to avoid loading multi-GB files into memory.
+    """
+    bucket = gcs_client.bucket(GCS_BUCKET_NAME)
+    blob = bucket.blob(blob_name)
+    chunk = blob.download_as_text(start=0, end=HEADER_READ_BYTES)
+    first_line = chunk.split("\n", 1)[0].strip()
+    return [col.strip().strip('"') for col in first_line.split(",")]
+
+
+# Column forced to INT64 for range partitioning on the mutation table.
+INT64_COLUMNS: set[str] = {PARTITION_FIELD}
+
+
+def _build_explicit_schema(
+    columns: list[str],
+    table_name: str,
+) -> list[Any]:
+    """Build an explicit BigQuery schema for a CSV table.
+
+    All columns default to STRING to avoid autodetect conflicts
+    with Corsican department codes (2A/2B). The ``anneemut``
+    column is forced to INT64 for mutation range partitioning.
+    """
+    from google.cloud import bigquery  # noqa: WPS433
+
+    schema = []
+    for col in columns:
+        if table_name == MUTATION_TABLE and col in INT64_COLUMNS:
+            schema.append(bigquery.SchemaField(col, "INT64"))
+        else:
+            schema.append(bigquery.SchemaField(col, "STRING"))
+    return schema
+
+
+def _build_csv_config(table_name: str) -> Any:
+    """Build a LoadJobConfig for CSV loading with autodetect.
+
+    Used for single-file loading (demo mode). The mutation table
+    gets range partitioning and clustering.
     """
     from google.cloud import bigquery  # noqa: WPS433
 
@@ -155,6 +201,37 @@ def _build_csv_config(table_name: str) -> Any:
         source_format=bigquery.SourceFormat.CSV,
         skip_leading_rows=1,
         autodetect=True,
+        write_disposition=bigquery.WriteDisposition.WRITE_TRUNCATE,
+    )
+    if table_name == MUTATION_TABLE:
+        config.range_partitioning = bigquery.RangePartitioning(
+            field=PARTITION_FIELD,
+            range_=bigquery.PartitionRange(
+                start=PARTITION_START,
+                end=PARTITION_END,
+                interval=PARTITION_INTERVAL,
+            ),
+        )
+        config.clustering_fields = CLUSTERING_FIELDS
+    return config
+
+
+def _build_wildcard_csv_config(
+    table_name: str,
+    schema: list[Any],
+) -> Any:
+    """Build a LoadJobConfig for wildcard CSV loading.
+
+    Uses an explicit schema (all STRING except anneemut) to
+    avoid autodetect type conflicts across chunk files.
+    """
+    from google.cloud import bigquery  # noqa: WPS433
+
+    config = bigquery.LoadJobConfig(
+        source_format=bigquery.SourceFormat.CSV,
+        skip_leading_rows=1,
+        autodetect=False,
+        schema=schema,
         write_disposition=bigquery.WriteDisposition.WRITE_TRUNCATE,
     )
     if table_name == MUTATION_TABLE:
@@ -243,11 +320,79 @@ def _load_geojson_blob(bq_client: Any, blob: Any) -> int:
     return table.num_rows
 
 
-def _load_all_csvs(bq_client: Any, blobs: list[Any]) -> int:
-    """Load all CSV blobs into BigQuery. Returns total row count."""
-    total = 0
+def _table_name_from_blob_path(blob_name: str) -> str:
+    """Extract the table name from a blob path.
+
+    Handles flat layout (``raw/dvf/mutation.csv`` -> ``mutation``)
+    and chunked layout (``raw/dvf/mutation/chunk_001.csv`` -> ``mutation``).
+    """
+    path = PurePosixPath(blob_name)
+    prefix_parts = PurePosixPath(GCS_DVF_PREFIX).parts
+    remaining = path.parts[len(prefix_parts):]
+    if len(remaining) >= 2:
+        return remaining[0]
+    return path.stem
+
+
+def _group_blobs_by_table(blobs: list[Any]) -> dict[str, list[Any]]:
+    """Group CSV blobs by their table name.
+
+    Handles both flat layout (``raw/dvf/mutation.csv`` -> ``mutation``)
+    and chunked layout (``raw/dvf/mutation/chunk_001.csv`` -> ``mutation``).
+    """
+    groups: dict[str, list[Any]] = {}
     for blob in blobs:
-        total += _load_csv_blob(bq_client, blob)
+        table_name = _table_name_from_blob_path(blob.name)
+        groups.setdefault(table_name, []).append(blob)
+    return groups
+
+
+def _load_table_blobs(
+    bq_client: Any,
+    table_name: str,
+    blobs: list[Any],
+) -> int:
+    """Load one table from one or more GCS blobs."""
+    if len(blobs) == 1:
+        return _load_csv_blob(bq_client, blobs[0])
+    return _load_csv_wildcard(bq_client, table_name, blobs)
+
+
+def _load_csv_wildcard(
+    bq_client: Any,
+    table_name: str,
+    blobs: list[Any],
+) -> int:
+    """Load a table from multiple chunk files using wildcard URI.
+
+    Uses an explicit all-STRING schema (read from the first chunk
+    header) to avoid autodetect type conflicts across files
+    (e.g. Corsican department codes 2A/2B vs numeric codes).
+    """
+    gcs_client = get_gcs_client()
+    columns = _read_csv_header_from_gcs(gcs_client, blobs[0].name)
+    schema = _build_explicit_schema(columns, table_name)
+    uri = f"gs://{GCS_BUCKET_NAME}/{GCS_DVF_PREFIX}/{table_name}/*"
+    dest = _table_id(table_name)
+    config = _build_wildcard_csv_config(table_name, schema)
+    logger.info("Loading %s (%d files) -> %s", uri, len(blobs), dest)
+    job = bq_client.load_table_from_uri(uri, dest, job_config=config)
+    job.result()
+    table = bq_client.get_table(dest)
+    logger.info("Loaded %s: %s rows", table_name, f"{table.num_rows:,}")
+    return table.num_rows
+
+
+def _load_all_csvs(bq_client: Any, blobs: list[Any]) -> int:
+    """Load all CSV tables into BigQuery.
+
+    Groups blobs by table name and loads each table, using wildcard
+    URIs for tables with multiple chunk files.
+    """
+    table_groups = _group_blobs_by_table(blobs)
+    total = 0
+    for table_name, table_blobs in table_groups.items():
+        total += _load_table_blobs(bq_client, table_name, table_blobs)
     return total
 
 

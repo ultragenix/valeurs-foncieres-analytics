@@ -2,6 +2,10 @@
 
 Uploads exported DVF+ CSV files to ``raw/dvf/`` and GeoJSON administrative
 boundary files to ``raw/geojson/`` in the configured GCS bucket.
+
+For chunked full-France ingestion, ``upload_chunk_to_gcs()`` uploads a
+chunk's CSV files to per-table GCS subdirectories
+(e.g., ``raw/dvf/mutation/chunk_001.csv``).
 """
 
 from __future__ import annotations
@@ -29,6 +33,7 @@ from ingestion.config import (
 logger = logging.getLogger(__name__)
 
 BYTES_PER_MB: int = 1_048_576
+MIN_CSV_DATA_SIZE: int = 1024  # Skip header-only CSVs (< 1 KB)
 
 
 # ---------------------------------------------------------------------------
@@ -153,6 +158,69 @@ def _upload_all(
     )
 
     progress.close()
+    return uploaded
+
+
+# ---------------------------------------------------------------------------
+# Per-chunk upload (full-France chunked ingestion)
+# ---------------------------------------------------------------------------
+def _chunk_gcs_path(table_name: str, chunk_index: int) -> str:
+    """Build the GCS path for a chunk's CSV file within a table subdir."""
+    return f"{GCS_DVF_PREFIX}/{table_name}/chunk_{chunk_index + 1:03d}.csv"
+
+
+def upload_chunk_to_gcs(chunk_dir: Path, chunk_index: int) -> int:
+    """Upload a chunk's CSV files to per-table GCS subdirectories.
+
+    Each CSV file in *chunk_dir* is uploaded to::
+
+        gs://bucket/raw/dvf/{table_name}/chunk_{NNN}.csv
+
+    For example, ``chunk_dir/mutation.csv`` with ``chunk_index=0``
+    becomes ``gs://bucket/raw/dvf/mutation/chunk_001.csv``.
+
+    Returns the count of files uploaded.
+    """
+    if not _validate_bucket_name():
+        return 0
+
+    csv_files = sorted(chunk_dir.glob("*.csv"))
+    if not csv_files:
+        logger.warning("No CSV files in chunk directory: %s", chunk_dir)
+        return 0
+
+    client = get_gcs_client()
+    bucket = client.bucket(GCS_BUCKET_NAME)
+    return _upload_chunk_files(bucket, csv_files, chunk_index)
+
+
+def _is_header_only(csv_file: Path) -> bool:
+    """Return True if a CSV file contains only a header (no data rows)."""
+    return csv_file.stat().st_size < MIN_CSV_DATA_SIZE
+
+
+def _upload_chunk_files(
+    bucket: Any,
+    csv_files: list[Path],
+    chunk_index: int,
+) -> int:
+    """Upload each CSV file to its per-table GCS subdirectory."""
+    uploaded = 0
+    for csv_file in csv_files:
+        if _is_header_only(csv_file):
+            logger.debug("Skipping header-only file: %s", csv_file.name)
+            continue
+        table_name = csv_file.stem
+        gcs_path = _chunk_gcs_path(table_name, chunk_index)
+        _upload_file(bucket, csv_file, gcs_path)
+        uploaded += 1
+    logger.info(
+        "Chunk %d: uploaded %d file(s) to gs://%s/%s/",
+        chunk_index + 1,
+        uploaded,
+        GCS_BUCKET_NAME,
+        GCS_DVF_PREFIX,
+    )
     return uploaded
 
 

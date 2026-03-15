@@ -2,7 +2,8 @@
 
 Processes department SQL files in configurable batches to avoid
 PostgreSQL WAL overflow and shared memory exhaustion. Each chunk
-cycle: restore into PG, export to CSV (append mode), upload to GCS.
+cycle: restore into PG, export to CSV, upload chunk to GCS per-table
+subdirectories, delete local chunk directory.
 A JSON progress file tracks completed departments for resume.
 """
 
@@ -24,7 +25,7 @@ from ingestion.config import (
     get_pg_connection,
     setup_logging,
 )
-from ingestion.export_tables import ALL_EXPORT_TABLES, export_tables
+from ingestion.export_tables import export_tables
 from ingestion.restore_dump import (
     _create_compatibility_views,
     _create_data_tables,
@@ -32,7 +33,7 @@ from ingestion.restore_dump import (
     _find_sql_files,
     _run_psql_file,
 )
-from ingestion.upload_to_gcs import upload_to_gcs
+from ingestion.upload_to_gcs import upload_chunk_to_gcs
 
 # ---------------------------------------------------------------------------
 # Constants
@@ -41,6 +42,9 @@ logger = logging.getLogger(__name__)
 
 # Subdirectory where national DVF+ dump extracts SQL files.
 LIVRAISON_SUBDIR: str = "1_DONNEES_LIVRAISON"
+
+# Prefix for chunk export subdirectories.
+CHUNK_DIR_PREFIX: str = "chunk_"
 
 
 # ---------------------------------------------------------------------------
@@ -242,127 +246,38 @@ def _create_views_if_national(data_schema: str | None) -> None:
 
 
 # ---------------------------------------------------------------------------
-# Chunk export (CSV append mode)
+# Per-chunk export and upload
 # ---------------------------------------------------------------------------
-def _export_chunk(is_first_chunk: bool) -> dict[str, int]:
-    """Export all tables to CSV, appending for subsequent chunks.
-
-    First chunk: exports normally (writes CSV headers). Subsequent
-    chunks: exports to temp files, then appends rows (skipping
-    the header line) to the main CSV files. Returns row counts per
-    table.
-    """
-    if is_first_chunk:
-        export_tables()
-        return _count_exported_rows()
-
-    _export_to_temp_files()
-    row_counts = _append_temp_to_main()
-    _cleanup_temp_files()
-    return row_counts
+def _chunk_dir(chunk_index: int) -> Path:
+    """Return the path for a chunk's export directory."""
+    return DATA_EXPORT_DIR / f"{CHUNK_DIR_PREFIX}{chunk_index + 1:03d}"
 
 
-def _count_exported_rows() -> dict[str, int]:
-    """Count rows in each exported CSV file (excluding header)."""
+def _move_exports_to_chunk_dir(chunk_index: int) -> Path:
+    """Move exported CSV files from DATA_EXPORT_DIR to chunk subdirectory."""
+    target = _chunk_dir(chunk_index)
+    target.mkdir(parents=True, exist_ok=True)
+    for csv_file in DATA_EXPORT_DIR.glob("*.csv"):
+        shutil.move(str(csv_file), str(target / csv_file.name))
+    return target
+
+
+def _count_chunk_rows(chunk_dir: Path) -> dict[str, int]:
+    """Count data rows per table in a chunk directory (lines minus header)."""
     counts: dict[str, int] = {}
-    for table in ALL_EXPORT_TABLES:
-        csv_path = DATA_EXPORT_DIR / f"{table}.csv"
-        if csv_path.exists():
-            counts[table] = _count_file_data_lines(csv_path)
+    for csv_file in sorted(chunk_dir.glob("*.csv")):
+        table_name = csv_file.stem
+        with open(csv_file, "r", encoding="utf-8") as fh:
+            line_count = sum(1 for _ in fh)
+        counts[table_name] = max(line_count - 1, 0)
     return counts
 
 
-def _count_file_data_lines(csv_path: Path) -> int:
-    """Count data lines in a CSV file (total lines minus header)."""
-    with open(csv_path, "r", encoding="utf-8") as fh:
-        line_count = sum(1 for _ in fh)
-    return max(line_count - 1, 0)
-
-
-def _export_to_temp_files() -> None:
-    """Export tables to temporary CSV files for append processing.
-
-    Renames existing main CSV files out of the way, runs the normal
-    export (which writes to the main filenames), then renames the
-    new files to ``{table}_chunk.csv`` and restores the originals.
-    """
-    _rename_main_to_backup()
-    export_tables()
-    _rename_exported_to_chunk()
-    _restore_backup_to_main()
-
-
-def _rename_main_to_backup() -> None:
-    """Rename existing main CSV files to .bak for safekeeping."""
-    for table in ALL_EXPORT_TABLES:
-        main = DATA_EXPORT_DIR / f"{table}.csv"
-        if main.exists():
-            main.rename(DATA_EXPORT_DIR / f"{table}.csv.bak")
-
-
-def _rename_exported_to_chunk() -> None:
-    """Rename freshly exported CSV files to _chunk.csv."""
-    for table in ALL_EXPORT_TABLES:
-        exported = DATA_EXPORT_DIR / f"{table}.csv"
-        if exported.exists():
-            exported.rename(DATA_EXPORT_DIR / f"{table}_chunk.csv")
-
-
-def _restore_backup_to_main() -> None:
-    """Restore .bak files back to their original names."""
-    for table in ALL_EXPORT_TABLES:
-        backup = DATA_EXPORT_DIR / f"{table}.csv.bak"
-        if backup.exists():
-            backup.rename(DATA_EXPORT_DIR / f"{table}.csv")
-
-
-def _append_temp_to_main() -> dict[str, int]:
-    """Append rows from chunk temp files to main CSV files.
-
-    Skips the first line (header) of each temp file. Returns the
-    number of appended rows per table.
-    """
-    row_counts: dict[str, int] = {}
-    for table in ALL_EXPORT_TABLES:
-        chunk_path = DATA_EXPORT_DIR / f"{table}_chunk.csv"
-        main_path = DATA_EXPORT_DIR / f"{table}.csv"
-        if chunk_path.exists() and main_path.exists():
-            row_counts[table] = _append_skipping_header(chunk_path, main_path)
-    return row_counts
-
-
-def _append_skipping_header(chunk_path: Path, main_path: Path) -> int:
-    """Append all lines except the first from *chunk_path* to *main_path*.
-
-    Returns the number of lines appended.
-    """
-    appended = 0
-    with open(chunk_path, "r", encoding="utf-8") as src:
-        next(src, None)  # skip header
-        with open(main_path, "a", encoding="utf-8") as dst:
-            for line in src:
-                dst.write(line)
-                appended += 1
-    return appended
-
-
-def _cleanup_temp_files() -> None:
-    """Delete temporary chunk CSV files."""
-    for table in ALL_EXPORT_TABLES:
-        chunk_path = DATA_EXPORT_DIR / f"{table}_chunk.csv"
-        chunk_path.unlink(missing_ok=True)
-
-
-# ---------------------------------------------------------------------------
-# GCS upload
-# ---------------------------------------------------------------------------
-def _upload_current_state() -> int:
-    """Upload the current accumulated CSV files to GCS.
-
-    Returns the number of files uploaded. Each upload overwrites the
-    previous version in the bucket.
-    """
-    return upload_to_gcs()
+def _upload_chunk(chunk_dir: Path, chunk_index: int) -> int:
+    """Upload this chunk's files to GCS and clean up local directory."""
+    count = upload_chunk_to_gcs(chunk_dir, chunk_index)
+    shutil.rmtree(chunk_dir)
+    return count
 
 
 # ---------------------------------------------------------------------------
@@ -409,7 +324,7 @@ def chunked_ingest() -> None:
 
     Discovers department SQL files, reads progress, groups remaining
     files into chunks, and processes each chunk: reset PG, restore,
-    export (append), upload to GCS, update progress.
+    export to chunk directory, upload to GCS, delete local, update progress.
     """
     annexe_file, dept_files = _discover_department_files(DATA_DIR)
     logger.info(
@@ -498,8 +413,10 @@ def _process_single_chunk(
     start = time.monotonic()
     _reset_if_not_first(is_first_chunk)
     _restore_chunk(annexe_file, chunk_files, is_first_chunk)
-    row_counts = _export_chunk(is_first_chunk)
-    _upload_current_state()
+    export_tables()
+    chunk_path = _move_exports_to_chunk_dir(chunk_index)
+    row_counts = _count_chunk_rows(chunk_path)
+    _upload_chunk(chunk_path, chunk_index)
     _finalize_chunk(chunk_index, total_chunks, dept_names, row_counts, start, progress)
 
 

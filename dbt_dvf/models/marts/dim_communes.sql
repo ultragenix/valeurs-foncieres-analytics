@@ -5,12 +5,20 @@
 
 WITH parcelle_communes AS (
 
-    -- Extract distinct commune codes from parcelle data
-    SELECT DISTINCT
+    -- Deduplicate by commune_code, keeping the most frequent department
+    SELECT
         commune_code,
-        department_code
-    FROM {{ ref('stg_dvf__parcelles') }}
-    WHERE commune_code IS NOT NULL
+        ARRAY_AGG(department_code ORDER BY dept_count DESC LIMIT 1)[OFFSET(0)] AS department_code
+    FROM (
+        SELECT
+            commune_code,
+            department_code,
+            COUNT(*) AS dept_count
+        FROM {{ ref('stg_dvf__parcelles') }}
+        WHERE commune_code IS NOT NULL
+        GROUP BY commune_code, department_code
+    )
+    GROUP BY commune_code
 
 ),
 
