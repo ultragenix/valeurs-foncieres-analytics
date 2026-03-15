@@ -1,6 +1,0 @@
-project_id           = "valeurs-foncieres-analytics"
-region               = "europe-west9"
-gcs_bucket_name      = "valeurs-foncieres-analytics-dvf-data-lake"
-bq_dataset_raw       = "dvf_raw"
-bq_dataset_staging   = "dvf_staging"
-bq_dataset_analytics = "dvf_analytics"

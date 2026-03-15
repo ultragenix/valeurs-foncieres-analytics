@@ -39,6 +39,7 @@ help: ## Show this help message
 
 setup: ## Initial project setup (copy .env, install deps, terraform init)
 	@test -f .env || cp .env.example .env
+	uv venv
 	uv pip install -r requirements.txt
 	cd terraform && terraform init
 
@@ -50,13 +51,19 @@ terraform-init: ## Initialize Terraform providers
 	cd terraform && terraform init
 
 terraform-plan: ## Preview Terraform changes
-	cd terraform && terraform plan
+	cd terraform && terraform plan \
+		-var="project_id=$(GCP_PROJECT_ID)" \
+		-var="gcs_bucket_name=$(GCS_BUCKET_NAME)"
 
 terraform-apply: ## Apply Terraform changes (provision GCP resources)
-	cd terraform && terraform apply
+	cd terraform && terraform apply \
+		-var="project_id=$(GCP_PROJECT_ID)" \
+		-var="gcs_bucket_name=$(GCS_BUCKET_NAME)"
 
 terraform-destroy: ## Destroy all Terraform-managed GCP resources
-	cd terraform && terraform destroy
+	cd terraform && terraform destroy \
+		-var="project_id=$(GCP_PROJECT_ID)" \
+		-var="gcs_bucket_name=$(GCS_BUCKET_NAME)"
 
 # =============================================================================
 # Docker (PostgreSQL for ingestion, Kestra for orchestration)
@@ -122,7 +129,7 @@ check-data: ## Verify DVF+ data is present before running pipeline
 		echo "ERROR: No DVF+ data found in data/"; \
 		echo ""; \
 		echo "Download the DVF+ SQL dump manually (no account needed):"; \
-		echo "  1. Visit https://cerema.app.box.com/v/dvfplus-opendata"; \
+		echo "  1. Visit https://cerema.app.box.com/v/dvfplus-opendata/folder/347155412504"; \
 		echo "  2. Download La Reunion .7z (38 MB, recommended for review)"; \
 		echo "  3. Place it in the data/ directory:"; \
 		echo "     mkdir -p data && cp ~/Downloads/DVFPlus_*.7z* data/"; \
@@ -196,4 +203,6 @@ test: ## Run all tests
 
 clean: ## Tear down everything (containers + GCP resources)
 	docker compose down -v
-	cd terraform && terraform destroy -auto-approve
+	cd terraform && terraform destroy -auto-approve \
+		-var="project_id=$(GCP_PROJECT_ID)" \
+		-var="gcs_bucket_name=$(GCS_BUCKET_NAME)"

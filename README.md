@@ -177,9 +177,30 @@ Before starting, ensure you have the following installed and configured:
 | uv | latest | `curl -LsSf https://astral.sh/uv/install.sh \| sh` |
 | Make | any | Pre-installed on Linux/macOS; on Windows use WSL |
 
-You will also need:
-- A GCP project with billing enabled (BigQuery free tier: 1 TB queries/month, 10 GB storage)
-- A GCP service account key (JSON) with Storage Object Admin and BigQuery Data Editor roles
+You will also need a **GCP project** with billing enabled (BigQuery free tier: 1 TB queries/month, 10 GB storage).
+
+**GCP setup (one-time, ~5 minutes):**
+
+```bash
+# 1. Create a project (or use an existing one) at console.cloud.google.com
+
+# 2. Enable the 4 required APIs
+gcloud services enable storage.googleapis.com bigquery.googleapis.com iam.googleapis.com cloudresourcemanager.googleapis.com
+
+# 3. Create a service account with Editor role
+gcloud iam service-accounts create dvf-pipeline --display-name="DVF Pipeline"
+gcloud projects add-iam-policy-binding YOUR_PROJECT_ID \
+  --member="serviceAccount:dvf-pipeline@YOUR_PROJECT_ID.iam.gserviceaccount.com" \
+  --role="roles/editor"
+
+# 4. Download the JSON key
+gcloud iam service-accounts keys create ./gcp-sa-key.json \
+  --iam-account=dvf-pipeline@YOUR_PROJECT_ID.iam.gserviceaccount.com
+```
+
+Replace `YOUR_PROJECT_ID` with your GCP project ID in the commands above.
+
+> **Alternative (no gcloud):** Do steps 2-4 in the [GCP Console](https://console.cloud.google.com/) — see detailed instructions in the Quick Start step 2 below.
 
 ## Quick Start
 
@@ -212,9 +233,13 @@ cp ~/Downloads/your-service-account-key.json ./gcp-sa-key.json
 <summary>How to create a GCP service account (click to expand)</summary>
 
 1. Go to [console.cloud.google.com](https://console.cloud.google.com/) and create a project (or use an existing one)
-2. Enable **BigQuery API** and **Cloud Storage API** (search in the API Library)
+2. Enable these APIs (search in the **API Library**):
+   - **Cloud Storage API**
+   - **BigQuery API**
+   - **Identity and Access Management (IAM) API**
+   - **Cloud Resource Manager API**
 3. Go to **IAM & Admin > Service Accounts** > **Create Service Account**
-4. Grant these roles: `Storage Object Admin`, `BigQuery Data Editor`, `BigQuery Job User`
+4. Grant the role: **Editor** (simplest for a review project — covers Storage, BigQuery, and IAM)
 5. Click **Keys** > **Add Key** > **Create new key** > **JSON**
 6. Save the downloaded file as `./gcp-sa-key.json`
 
