@@ -521,9 +521,11 @@ If `DVF_DEMO_DEPARTMENTS` in `.env` does not match the region you downloaded, th
 
 ## Future Improvements
 
-- Streaming ingestion to avoid the ephemeral PostgreSQL dump-and-restore step
+- **Cloud SQL instead of local Docker**: The PostgreSQL restore (hours on a local machine) could run on a managed Cloud SQL instance in GCP, eliminating WSL2 memory crashes and speeding up the heaviest pipeline step
+- **Skip PostgreSQL entirely**: DVF+ data is only available as SQL dumps (requiring `pg_restore`). If Cerema published CSV exports, the pipeline could go straight from download to GCS — no Docker, no restore, no export. Alternatively, basic DVF data (without enriched fields) is already available as CSV on data.gouv.fr
+- **Incremental loading**: Currently the pipeline does a full reload (~222M rows across all tables). With versioned GCS prefixes per release (`raw/dvf/2025-10/`), `WRITE_APPEND` in BigQuery, and dbt incremental models with `unique_key`, only new transactions would be processed — saving hours of restore/export/upload
+- **Cloud Run job for ingestion**: Move the entire restore-export-upload cycle to a Cloud Run job that runs in GCP, downloading directly to GCS without passing through a local machine
 - Runtime data quality monitoring with dbt elementary or Great Expectations
-- Incremental dbt models for `fct_transactions` to reduce rebuild cost at scale
 - CI/CD pipeline (GitHub Actions) for automated `dbt build` on pull requests
 - Native BigQuery GeoJSON ingestion to replace the STRING-to-GEOGRAPHY staging step
 
