@@ -68,6 +68,11 @@ All tiles connect to BigQuery tables in the `dvf_analytics` dataset:
 - **Field**: `property_type_label`
 - **Applies to**: All tiles on the page
 
+**Department filter**:
+- **Type**: Drop-down list
+- **Field**: `department_code`
+- **Applies to**: All tiles on the page
+
 ## Setup Instructions
 
 ### Step 1: Open Looker Studio

@@ -35,7 +35,7 @@ load_dotenv(PROJECT_ROOT / ".env")
 DVF_MODE: str = os.getenv("DVF_MODE", "demo")
 DVF_DEMO_DEPARTMENTS: list[str] = [
     d.strip()
-    for d in os.getenv("DVF_DEMO_DEPARTMENTS", "75,13").split(",")
+    for d in os.getenv("DVF_DEMO_DEPARTMENTS", "974").split(",")
     if d.strip()
 ]
 

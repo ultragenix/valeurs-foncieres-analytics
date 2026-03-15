@@ -2,6 +2,8 @@
 
 End-to-end data pipeline for French real estate transaction analytics using the DVF+ dataset (20M+ transactions, 2014--2025).
 
+> **TL;DR:** End-to-end batch pipeline that transforms France's 20M+ real estate transactions (DVF+ open data, 2014–2025) into a Kimball star schema on BigQuery, exposed through an interactive Looker Studio dashboard. Stack: GCP · Terraform · Docker · PostgreSQL · Python · dbt · Kestra. Reproducible in ~15 min: `make setup && make terraform-apply && make run` (one manual download required). Targets 28/28 on Zoomcamp evaluation criteria.
+
 ## Problem Statement
 
 France publishes one of the most comprehensive open real estate transaction datasets in the world: **DVF+** (Demandes de Valeurs Foncieres), maintained by [Cerema](https://www.cerema.fr/). It covers every notarized property sale since January 2014 -- over 20 million transactions across 17 relational tables. The data includes transaction prices, property types, land and built areas, locations, and cadastral references for the entire country (metropolitan France and overseas territories).
@@ -61,8 +63,9 @@ ETALAB / IGN                    |                                   |
                                 +-----------------------------------+
                                 |  Dashboard (shareable URL)        |
                                 |    Tile 1: tx count by prop type  |
-                                |    Tile 2: price evolution / year |
-                                |    Tile 3: price/m2 by dept      |
+                                |    Tile 2: tx value by prop type  |
+                                |    Tile 3: avg price / year       |
+                                |    Tile 4: tx volume / year       |
                                 +-----------------------------------+
 
 ORCHESTRATION: Kestra DAG wraps all steps into a single end-to-end pipeline
@@ -185,7 +188,7 @@ You will also need:
 ### 1. Clone, configure, and install
 
 ```bash
-git clone <this-repository-url>
+git clone https://github.com/ultragenix/valeurs-foncieres-analytics.git
 cd valeurs-foncieres-analytics
 make setup                    # creates .env from template, installs Python deps, inits Terraform
 ```
@@ -275,7 +278,7 @@ This single command runs the entire pipeline: extracts the `.7z` archive, restor
 
 **[Open the dashboard](https://lookerstudio.google.com/reporting/b0b00d24-9d2f-4164-86f2-79e72340f4ac)** (Looker Studio — no install needed)
 
-The dashboard has 4 tiles across 2 pages with 2 interactive filters (year, property type). It connects directly to BigQuery. Reviewers can view it without running the pipeline.
+The dashboard has 4 tiles across 2 pages with 3 interactive filters (year, property type, department). It connects directly to BigQuery. Reviewers can view it without running the pipeline.
 
 To verify dashboard data matches BigQuery:
 
