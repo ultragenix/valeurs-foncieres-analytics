@@ -205,8 +205,15 @@ test: ## Run all tests
 # Cleanup (tear down all local and cloud resources)
 # =============================================================================
 
-clean: ## Tear down everything (containers + GCP resources)
+clean: ## Tear down everything (containers + GCP resources — will ask for confirmation)
 	docker compose down -v
-	cd terraform && terraform destroy -auto-approve \
+	@echo ""
+	@echo "This will DESTROY all GCP resources created by this project:"
+	@echo "  - GCS bucket: $(GCS_BUCKET_NAME)"
+	@echo "  - BigQuery datasets: dvf_raw, dvf_staging, dvf_analytics"
+	@echo "  - Service account: dvf-pipeline"
+	@echo "Other resources in your GCP project will NOT be affected."
+	@echo ""
+	cd terraform && terraform destroy \
 		-var="project_id=$(GCP_PROJECT_ID)" \
 		-var="gcs_bucket_name=$(GCS_BUCKET_NAME)"
