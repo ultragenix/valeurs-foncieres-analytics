@@ -1,8 +1,17 @@
 """Export DVF+ tables from PostgreSQL to CSV files.
 
-Handles PostGIS geometry extraction (point to lat/lon floats),
-PostgreSQL array columns (to first-element or comma-separated strings),
-and drops heavy polygon geometry columns not needed for BigQuery.
+Handles PostGIS geometry extraction (point centroids to lat/lon floats),
+PostgreSQL array columns (to first-element scalars), and drops heavy
+polygon geometry columns not needed downstream in BigQuery.
+
+Inputs:
+    - Populated PostgreSQL tables in ``dvf`` / ``dvf_annexe`` schemas.
+Outputs:
+    - CSV files in ``data/export/`` (one per table).
+
+Dependencies:
+    psycopg2 -- for database queries and ``COPY ... TO STDOUT``.
+    tqdm     -- for export progress bar.
 """
 
 import csv
@@ -63,7 +72,11 @@ DVF_SCHEMAS: list[str] = ["public", "dvf", "dvf_annexe", "dvf_plus_annexe"]
 
 
 def _set_search_path(conn: psycopg2.extensions.connection) -> None:
-    """Set search_path to include all DVF-relevant schemas."""
+    """Set ``search_path`` to include all DVF-relevant schemas.
+
+    Args:
+        conn: Open psycopg2 connection.
+    """
     with conn.cursor() as cur:
         cur.execute("SET search_path TO dvf, dvf_annexe, public;")
     conn.commit()
@@ -72,7 +85,17 @@ def _set_search_path(conn: psycopg2.extensions.connection) -> None:
 def _get_table_columns(
     conn: psycopg2.extensions.connection, table_name: str
 ) -> list[str]:
-    """Return the ordered list of column names for *table_name*."""
+    """Return the ordered list of column names for *table_name*.
+
+    Searches across all schemas listed in ``DVF_SCHEMAS``.
+
+    Args:
+        conn: Open psycopg2 connection.
+        table_name: Unqualified table name.
+
+    Returns:
+        List of column names in ordinal position order.
+    """
     placeholders = ", ".join(["%s"] * len(DVF_SCHEMAS))
     query = f"""
         SELECT column_name
@@ -90,9 +113,15 @@ def _get_table_columns(
 # Query builders
 # ---------------------------------------------------------------------------
 def _validate_department_codes(departments: list[str]) -> None:
-    """Validate that all department codes match the expected pattern.
+    """Validate that all department codes match the expected French pattern.
 
-    Raises ValueError if any code is invalid.
+    Valid codes: ``01``-``95``, ``2A``, ``2B``, ``971``-``976``.
+
+    Args:
+        departments: List of department code strings to validate.
+
+    Raises:
+        ValueError: If any code does not match ``DEPARTMENT_CODE_PATTERN``.
     """
     for code in departments:
         if not DEPARTMENT_CODE_PATTERN.match(code):
@@ -105,6 +134,15 @@ def _build_where_clause(table_name: str, departments: list[str] | None) -> str:
 
     Validates department codes against a strict regex before embedding
     them in SQL to prevent injection.
+
+    Args:
+        table_name: Table to filter (only tables in ``TABLES_WITH_CODDEP``
+            are filtered).
+        departments: List of department codes, or ``None`` for no filter.
+
+    Returns:
+        SQL WHERE clause string (e.g. `` WHERE coddep IN ('75','13')``),
+        or empty string if no filter applies.
     """
     if not departments:
         return ""
@@ -115,7 +153,8 @@ def _build_where_clause(table_name: str, departments: list[str] | None) -> str:
     return f" WHERE coddep IN ({placeholders})"
 
 
-# Columns that need special handling in mutation export.
+# Array columns replaced by their first element (PG arrays -> scalar).
+# Maps original column name to the SQL expression with alias.
 _MUTATION_ARRAY_COLS: dict[str, str] = {
     "l_codinsee": "l_codinsee[1] AS codinsee",
     "l_section": "l_section[1] AS section",
@@ -123,6 +162,9 @@ _MUTATION_ARRAY_COLS: dict[str, str] = {
     "l_artcgi": "l_artcgi[1] AS artcgi",
 }
 
+# Geometry columns transformed to WGS84 lat/lon via PostGIS.
+# ST_Centroid handles multi-point geometries; ST_Transform reprojects
+# from the source CRS to EPSG:4326 (standard lat/lon).
 _MUTATION_GEOM_COLS: dict[str, str] = {
     "geomlocmut": (
         "ST_Y(ST_Transform(ST_Centroid(geomlocmut), 4326)) AS latitude,"
@@ -130,18 +172,21 @@ _MUTATION_GEOM_COLS: dict[str, str] = {
     ),
 }
 
+# Columns to skip entirely in mutation export.  Includes array columns
+# (handled above), geometry columns (handled above or too heavy), and
+# columns not needed in BigQuery (internal identifiers, document refs).
 _MUTATION_SKIP_COLS: set[str] = {
     *_MUTATION_ARRAY_COLS.keys(),
     *_MUTATION_GEOM_COLS.keys(),
-    "geomparmut",
-    "geompar",
-    "codservch",
-    "refdoc",
-    "idmutinvar",
-    "l_dcnt",
-    "l_idpar",
-    "l_idparmut",
-    "l_idlocmut",
+    "geomparmut",      # Heavy polygon geometry (parcel mutation boundary)
+    "geompar",         # Heavy polygon geometry (parcel boundary)
+    "codservch",       # Internal service code (not needed downstream)
+    "refdoc",          # Document reference (not needed downstream)
+    "idmutinvar",      # Invariant mutation ID (superseded by idmutation)
+    "l_dcnt",          # Array of land use counts (too granular)
+    "l_idpar",         # Array of parcel IDs (joined via parcelle table)
+    "l_idparmut",      # Array of mutation parcel IDs
+    "l_idlocmut",      # Array of mutation local IDs
 }
 
 
@@ -149,10 +194,20 @@ def _build_mutation_query(
     conn: psycopg2.extensions.connection,
     departments: list[str] | None,
 ) -> str:
-    """Build the SELECT query for the mutation table.
+    """Build the SELECT query for the ``mutation`` table.
 
-    Dynamically adapts to the columns present in the actual database,
-    extracting geometry as lat/lon floats and array columns as scalars.
+    Dynamically adapts to the columns present in the actual database:
+    - PostGIS geometry columns are transformed to ``latitude``/``longitude``
+      floats via ``ST_Centroid`` + ``ST_Transform`` to EPSG:4326.
+    - Array columns (``l_*``) are reduced to their first element.
+    - Heavy/unused columns are dropped entirely.
+
+    Args:
+        conn: Open psycopg2 connection (for column introspection).
+        departments: Department codes for WHERE clause, or ``None``.
+
+    Returns:
+        A complete SQL SELECT query string.
     """
     all_cols = _get_table_columns(conn, "mutation")
     select_parts: list[str] = []
@@ -174,7 +229,15 @@ def _build_parcelle_query(
     conn: psycopg2.extensions.connection,
     departments: list[str] | None,
 ) -> str:
-    """Build a SELECT for parcelle, excluding heavy geometry columns."""
+    """Build a SELECT for ``parcelle``, excluding heavy geometry columns.
+
+    Args:
+        conn: Open psycopg2 connection (for column introspection).
+        departments: Department codes for WHERE clause, or ``None``.
+
+    Returns:
+        A complete SQL SELECT query string.
+    """
     all_cols = _get_table_columns(conn, "parcelle")
     keep = [c for c in all_cols if c not in PARCELLE_EXCLUDE_COLUMNS]
     cols_sql = ", ".join(keep)
@@ -186,7 +249,15 @@ def _build_disposition_parcelle_query(
     conn: psycopg2.extensions.connection,
     departments: list[str] | None,
 ) -> str:
-    """Build a SELECT for disposition_parcelle, excluding geometry columns."""
+    """Build a SELECT for ``disposition_parcelle``, excluding geometry columns.
+
+    Args:
+        conn: Open psycopg2 connection (for column introspection).
+        departments: Department codes for WHERE clause, or ``None``.
+
+    Returns:
+        A complete SQL SELECT query string.
+    """
     all_cols = _get_table_columns(conn, "disposition_parcelle")
     keep = [c for c in all_cols if c not in DISPOSITION_PARCELLE_EXCLUDE_COLUMNS]
     cols_sql = ", ".join(keep)
@@ -198,7 +269,15 @@ def _build_simple_query(
     table_name: str,
     departments: list[str] | None,
 ) -> str:
-    """Build a simple SELECT * query, optionally filtered by department."""
+    """Build a simple ``SELECT *`` query, optionally filtered by department.
+
+    Args:
+        table_name: Unqualified table name.
+        departments: Department codes for WHERE clause, or ``None``.
+
+    Returns:
+        A complete SQL SELECT query string.
+    """
     where = _build_where_clause(table_name, departments)
     return f"SELECT * FROM {table_name}{where}"
 
@@ -212,9 +291,16 @@ def _export_table(
     query: str,
     output_path: Path,
 ) -> int:
-    """Export a query result to CSV via COPY ... TO STDOUT.
+    """Export a query result to CSV via ``COPY (...) TO STDOUT WITH CSV HEADER``.
 
-    Returns the number of lines written (excluding the header).
+    Args:
+        conn: Open psycopg2 connection.
+        table_name: Table name (used for logging only).
+        query: SQL SELECT query whose results will be exported.
+        output_path: Destination CSV file path (parent dirs created).
+
+    Returns:
+        Number of data rows written (excluding the header).
     """
     copy_sql = f"COPY ({query}) TO STDOUT WITH CSV HEADER"
     output_path.parent.mkdir(parents=True, exist_ok=True)
@@ -234,10 +320,16 @@ def _export_table(
 
 
 def _count_csv_rows(csv_path: Path) -> int:
-    """Count data rows in a CSV file using csv.reader.
+    """Count data rows in a CSV file using ``csv.reader``.
 
     Handles multiline quoted fields correctly by counting actual CSV
     records rather than raw lines. Subtracts 1 for the header row.
+
+    Args:
+        csv_path: Path to the CSV file.
+
+    Returns:
+        Number of data rows (total records minus header), minimum 0.
     """
     csv.field_size_limit(10_000_000)  # 10 MB for large geometry WKT fields
     with open(csv_path, "r", encoding="utf-8") as fh:
@@ -250,7 +342,12 @@ def _count_csv_rows(csv_path: Path) -> int:
 # Department filter resolution
 # ---------------------------------------------------------------------------
 def _resolve_departments() -> list[str] | None:
-    """Return demo department codes if in demo mode, else None."""
+    """Return demo department codes if in demo mode, else ``None``.
+
+    Returns:
+        List of department codes from ``DVF_DEMO_DEPARTMENTS`` when
+        ``DVF_MODE`` is ``"demo"``, otherwise ``None`` (no filtering).
+    """
     if DVF_MODE == "demo":
         logger.info(
             "Demo mode: filtering exports to departments %s", DVF_DEMO_DEPARTMENTS
@@ -267,7 +364,20 @@ def _build_query_for_table(
     table_name: str,
     departments: list[str] | None,
 ) -> str:
-    """Return the appropriate SQL query for exporting *table_name*."""
+    """Return the appropriate SQL query for exporting *table_name*.
+
+    Dispatches to table-specific query builders for ``mutation``,
+    ``parcelle``, and ``disposition_parcelle``; falls back to a simple
+    ``SELECT *`` for all other tables.
+
+    Args:
+        conn: Open psycopg2 connection.
+        table_name: Unqualified table name.
+        departments: Department codes for filtering, or ``None``.
+
+    Returns:
+        A complete SQL SELECT query string.
+    """
     if table_name == "mutation":
         return _build_mutation_query(conn, departments)
     if table_name == "parcelle":
@@ -278,7 +388,15 @@ def _build_query_for_table(
 
 
 def _table_exists(conn: psycopg2.extensions.connection, table_name: str) -> bool:
-    """Check whether *table_name* exists in any DVF-relevant schema."""
+    """Check whether *table_name* exists in any DVF-relevant schema.
+
+    Args:
+        conn: Open psycopg2 connection.
+        table_name: Unqualified table name.
+
+    Returns:
+        True if the table exists in any of ``DVF_SCHEMAS``.
+    """
     placeholders = ", ".join(["%s"] * len(DVF_SCHEMAS))
     query = f"""
         SELECT 1
@@ -313,7 +431,12 @@ def _export_all_tables(
     conn: psycopg2.extensions.connection,
     departments: list[str] | None,
 ) -> None:
-    """Iterate over all tables and export each one."""
+    """Iterate over all tables and export each one to CSV.
+
+    Args:
+        conn: Open psycopg2 connection.
+        departments: Department codes for filtering, or ``None``.
+    """
     total_rows = 0
     progress = tqdm(ALL_EXPORT_TABLES, desc="Exporting tables", unit="table")
 
@@ -329,7 +452,16 @@ def _export_single_table(
     table_name: str,
     departments: list[str] | None,
 ) -> int:
-    """Export a single table, skipping if it does not exist. Returns row count."""
+    """Export a single table to CSV, skipping if it does not exist.
+
+    Args:
+        conn: Open psycopg2 connection.
+        table_name: Unqualified table name.
+        departments: Department codes for filtering, or ``None``.
+
+    Returns:
+        Number of data rows exported, or 0 if the table was skipped.
+    """
     if not _table_exists(conn, table_name):
         logger.warning("Table %s does not exist -- skipping.", table_name)
         return 0

@@ -1,17 +1,26 @@
 """Restore DVF+ SQL dump into the ephemeral PostgreSQL container.
 
-Finds .sql files in data/ (or data/1_DONNEES_LIVRAISON/ for the national
-format), executes them via ``psql -f``, then verifies that the expected
-tables were created and contain data. In demo mode, rows outside the
-configured departments are deleted to reduce volume.
+Finds ``.sql`` files in ``data/`` (or ``data/1_DONNEES_LIVRAISON/`` for
+the national format), executes them via ``psql -f``, then verifies that
+the expected tables were created and contain data. In demo mode, rows
+outside the configured departments are deleted to reduce volume.
 
 Supports two dump formats:
-  - Regional (demo): schemas ``dvf`` + ``dvf_annexe``, tables named directly
-    (e.g. ``mutation``, ``disposition``).
+  - Regional (demo): schemas ``dvf`` + ``dvf_annexe``, tables named
+    directly (e.g. ``mutation``, ``disposition``).
   - National (full): schemas ``dvf_plus_<year>_<semester>`` +
     ``dvf_plus_annexe``, tables prefixed with ``dvf_plus_`` (e.g.
     ``dvf_plus_mutation``). Compatibility views in ``dvf`` / ``dvf_annexe``
     are created automatically so downstream code works unchanged.
+
+Inputs:
+    - ``.sql`` files produced by ``download_dvf``.
+Outputs:
+    - Populated PostgreSQL tables in ``dvf`` / ``dvf_annexe`` schemas.
+
+Dependencies:
+    psycopg2 -- for database introspection and demo-mode filtering.
+    psql     -- external CLI tool for executing SQL dump files.
 """
 
 import logging
@@ -117,6 +126,13 @@ def _sort_sql_files(files: list[Path]) -> list[Path]:
 
     Handles both the demo format (``dvf_initial.sql`` first) and the national
     format (``dvf_plus_annexe.sql`` first, then department files in order).
+
+    Args:
+        files: Unsorted list of SQL file paths.
+
+    Returns:
+        Sorted list with init/annexe files first (priority 0), then data
+        files alphabetically (priority 1).
     """
 
     def priority(path: Path) -> tuple[int, str]:
@@ -131,10 +147,17 @@ def _sort_sql_files(files: list[Path]) -> list[Path]:
 
 
 def _find_sql_files(directory: Path) -> list[Path]:
-    """Return .sql files in *directory* and its livraison subdirectory.
+    """Return ``.sql`` files in *directory* and its livraison subdirectory.
 
     The national DVF+ dump extracts into ``1_DONNEES_LIVRAISON/``, so we
     search there as well as the top-level directory.
+
+    Args:
+        directory: Base data directory to search.
+
+    Returns:
+        Sorted list of SQL file paths (init/annexe first), or empty list
+        if no SQL files are found.
     """
     if not directory.exists():
         return []
@@ -153,10 +176,17 @@ def _find_sql_files(directory: Path) -> list[Path]:
 def _detect_national_schema(sql_files: list[Path]) -> str | None:
     """Detect the national data schema name from COPY commands in SQL files.
 
-    Scans department files for COPY commands like
+    Scans department files (skipping annexe files) for COPY commands like
     ``COPY dvf_plus_2025_2.dvf_plus_mutation (...) FROM stdin;``
-    and returns the schema name (e.g. ``dvf_plus_2025_2``), or None if
-    no national-format COPY commands are found (demo format).
+    and returns the schema name (e.g. ``dvf_plus_2025_2``).
+
+    Args:
+        sql_files: List of SQL file paths to scan.
+
+    Returns:
+        The national data schema name (e.g. ``dvf_plus_2025_2``), or
+        ``None`` if no national-format COPY commands are found (indicating
+        demo/regional format).
     """
     for sql_file in sql_files:
         if "annexe" in sql_file.name.lower():
@@ -179,8 +209,12 @@ def _parse_copy_definitions(
 ) -> dict[str, list[str]]:
     """Parse COPY commands from a department SQL file.
 
-    Returns a dict mapping fully-qualified table name
-    (e.g. ``dvf_plus_2025_2.dvf_plus_mutation``) to its column list.
+    Args:
+        sql_file: Path to a department SQL dump file.
+
+    Returns:
+        Dict mapping fully-qualified table name (e.g.
+        ``dvf_plus_2025_2.dvf_plus_mutation``) to its ordered column list.
     """
     tables: dict[str, list[str]] = {}
     with open(sql_file, "r", encoding="utf-8") as fh:
@@ -199,10 +233,16 @@ def _parse_copy_definitions(
 def _column_type(column_name: str) -> str:
     """Infer a PostgreSQL column type from the column name.
 
-    Uses geometry type for known PostGIS columns and text[] for known
-    array columns. Defaults to text for everything else -- this is safe
-    because COPY accepts text into text columns, and downstream export
-    queries handle type coercion.
+    Uses ``geometry`` for known PostGIS columns and ``text[]`` for known
+    array columns. Defaults to ``text`` for everything else -- this is
+    safe because COPY accepts text into text columns, and downstream
+    export queries handle type coercion.
+
+    Args:
+        column_name: The column name to infer a type for.
+
+    Returns:
+        PostgreSQL type string: ``"geometry"``, ``"text[]"``, or ``"text"``.
     """
     if column_name in _GEOMETRY_COLUMNS:
         return "geometry"
@@ -216,8 +256,14 @@ def _generate_create_table_ddl(
 ) -> str:
     """Generate CREATE TABLE statements for all national-format tables.
 
-    Returns a single SQL string with CREATE SCHEMA IF NOT EXISTS and
-    CREATE TABLE IF NOT EXISTS for each table discovered from COPY commands.
+    Args:
+        tables: Dict mapping fully-qualified table names to column lists,
+            as returned by ``_parse_copy_definitions``.
+
+    Returns:
+        A single SQL string with ``CREATE SCHEMA IF NOT EXISTS`` and
+        ``CREATE TABLE IF NOT EXISTS`` for each table. Returns an empty
+        string if *tables* is empty.
     """
     if not tables:
         return ""
@@ -246,7 +292,14 @@ def _generate_create_table_ddl(
 
 
 def _has_init_file(sql_files: list[Path]) -> bool:
-    """Check whether the SQL file list includes an init/schema DDL file."""
+    """Check whether the SQL file list includes an init/schema DDL file.
+
+    Args:
+        sql_files: List of SQL file paths to check.
+
+    Returns:
+        True if any filename contains ``init`` or ``initial``.
+    """
     return any(
         "init" in f.name.lower() or "initial" in f.name.lower() for f in sql_files
     )
@@ -261,10 +314,16 @@ def _create_data_tables(
     The national DVF+ dump normally includes an init file
     (``dvf_plus_init.sql``) that creates the data schema and tables. If
     that file is present, this function only detects and returns the
-    schema name.  If no init file is found, it parses COPY commands from
+    schema name. If no init file is found, it parses COPY commands from
     a department file and generates CREATE TABLE DDL as a fallback.
 
-    Returns the detected data schema name, or None for demo format.
+    Args:
+        conn: Open psycopg2 connection to the DVF database.
+        sql_files: Sorted list of SQL dump files.
+
+    Returns:
+        The detected data schema name (e.g. ``dvf_plus_2025_2``), or
+        ``None`` for demo/regional format.
     """
     data_schema = _detect_national_schema(sql_files)
     if data_schema is None:
@@ -315,6 +374,10 @@ def _create_compatibility_views(
     names. This function creates views so that downstream code using
     ``search_path TO dvf, dvf_annexe, public`` finds the expected table
     names (e.g. ``dvf.mutation`` points to ``dvf_plus_2025_2.dvf_plus_mutation``).
+
+    Args:
+        conn: Open psycopg2 connection.
+        data_schema: National data schema name (e.g. ``dvf_plus_2025_2``).
     """
     ddl_parts: list[str] = [
         "CREATE SCHEMA IF NOT EXISTS dvf;",
@@ -352,7 +415,11 @@ def _create_compatibility_views(
 # psql execution helpers
 # ---------------------------------------------------------------------------
 def _build_psql_env() -> dict[str, str]:
-    """Build environment dict for psql subprocess (with PGPASSWORD)."""
+    """Build environment dict for psql subprocess (with PGPASSWORD).
+
+    Returns:
+        Copy of ``os.environ`` with ``PGPASSWORD`` set from config.
+    """
     import os
 
     env = os.environ.copy()
@@ -361,7 +428,17 @@ def _build_psql_env() -> dict[str, str]:
 
 
 def _build_psql_command(sql_file: Path) -> list[str]:
-    """Build the psql command list for executing a SQL file."""
+    """Build the psql command list for executing a SQL file.
+
+    Uses ``ON_ERROR_STOP=off`` so that non-fatal errors (e.g. duplicate
+    keys from partial re-runs) do not abort the entire restore.
+
+    Args:
+        sql_file: Path to the ``.sql`` file to execute.
+
+    Returns:
+        List of command-line arguments suitable for ``subprocess.run``.
+    """
     return [
         "psql",
         "-h",
@@ -380,7 +457,14 @@ def _build_psql_command(sql_file: Path) -> list[str]:
 
 
 def _run_psql_file(sql_file: Path) -> int:
-    """Execute a .sql file via ``psql -f`` and return the exit code."""
+    """Execute a ``.sql`` file via ``psql -f`` and return the exit code.
+
+    Args:
+        sql_file: Path to the SQL dump file.
+
+    Returns:
+        The psql process exit code (0 on success).
+    """
     cmd = _build_psql_command(sql_file)
     logger.info("Running: %s", " ".join(cmd))
     result = subprocess.run(
@@ -403,7 +487,11 @@ def _run_psql_file(sql_file: Path) -> int:
 
 
 def _ensure_postgis(conn: psycopg2.extensions.connection) -> None:
-    """Ensure the PostGIS extension is enabled."""
+    """Ensure the PostGIS extension is enabled in the database.
+
+    Args:
+        conn: Open psycopg2 connection to the DVF database.
+    """
     with conn.cursor() as cur:
         cur.execute("CREATE EXTENSION IF NOT EXISTS postgis;")
     conn.commit()
@@ -419,8 +507,14 @@ DVF_SCHEMAS: list[str] = ["public", "dvf", "dvf_annexe", "dvf_plus_annexe"]
 def _get_all_dvf_schemas(conn: psycopg2.extensions.connection) -> list[str]:
     """Return all DVF-relevant schemas that exist in the database.
 
-    Includes the static schemas plus any dynamically-created
-    ``dvf_plus_<year>_<sem>`` data schemas.
+    Includes the static schemas (``dvf``, ``dvf_annexe``, ``public``)
+    plus any dynamically-created ``dvf_plus_<year>_<sem>`` data schemas.
+
+    Args:
+        conn: Open psycopg2 connection.
+
+    Returns:
+        Sorted list of schema names matching ``dvf%`` or ``public``.
     """
     query = """
         SELECT schema_name
@@ -435,7 +529,14 @@ def _get_all_dvf_schemas(conn: psycopg2.extensions.connection) -> list[str]:
 
 
 def _list_tables(conn: psycopg2.extensions.connection) -> list[str]:
-    """Return names of all tables and views in DVF-relevant schemas."""
+    """Return names of all tables and views in DVF-relevant schemas.
+
+    Args:
+        conn: Open psycopg2 connection.
+
+    Returns:
+        Sorted list of table/view names across all DVF schemas.
+    """
     schemas = _get_all_dvf_schemas(conn)
     if not schemas:
         return []
@@ -453,7 +554,15 @@ def _list_tables(conn: psycopg2.extensions.connection) -> list[str]:
 
 
 def _resolve_schema(conn: psycopg2.extensions.connection, table: str) -> str | None:
-    """Find the schema containing *table*, searching DVF-relevant schemas."""
+    """Find the schema containing *table*, searching DVF-relevant schemas.
+
+    Args:
+        conn: Open psycopg2 connection.
+        table: Unqualified table name to look up.
+
+    Returns:
+        The schema name containing the table, or ``None`` if not found.
+    """
     schemas = _get_all_dvf_schemas(conn)
     if not schemas:
         return None
@@ -482,6 +591,13 @@ def _resolve_base_table(
     pair for the base table so that DML operations like DELETE work.
 
     Falls back to the view if no base table is found.
+
+    Args:
+        conn: Open psycopg2 connection.
+        table: Demo-style table name (e.g. ``mutation``).
+
+    Returns:
+        Tuple of ``(schema, table_name)`` for the resolved base table.
     """
     schemas = _get_all_dvf_schemas(conn)
     if not schemas:
@@ -526,7 +642,15 @@ def _resolve_base_table(
 
 
 def _count_rows(conn: psycopg2.extensions.connection, table: str) -> int:
-    """Return the row count for *table*."""
+    """Return the row count for *table*.
+
+    Args:
+        conn: Open psycopg2 connection.
+        table: Unqualified table name (schema is resolved automatically).
+
+    Returns:
+        Number of rows in the table.
+    """
     schema = _resolve_schema(conn, table)
     qualified = f"{schema}.{table}" if schema else table
     with conn.cursor() as cur:
@@ -538,7 +662,16 @@ def _count_rows(conn: psycopg2.extensions.connection, table: str) -> int:
 def _table_has_column(
     conn: psycopg2.extensions.connection, table: str, column: str
 ) -> bool:
-    """Check whether *table* has a column named *column*."""
+    """Check whether *table* has a column named *column*.
+
+    Args:
+        conn: Open psycopg2 connection.
+        table: Unqualified table name.
+        column: Column name to look for.
+
+    Returns:
+        True if the column exists in any DVF-relevant schema.
+    """
     schemas = _get_all_dvf_schemas(conn)
     if not schemas:
         return False
@@ -563,10 +696,15 @@ def _delete_outside_departments(
     table: str,
     departments: list[str],
 ) -> None:
-    """Delete rows from *table* where coddep is not in *departments*.
+    """Delete rows from *table* where ``coddep`` is not in *departments*.
 
     Resolves to the base table (not a view) so DELETE works correctly
     with both demo and national dump formats.
+
+    Args:
+        conn: Open psycopg2 connection (auto-committed per table).
+        table: Demo-style table name (e.g. ``mutation``).
+        departments: List of department codes to keep (e.g. ``["75", "13"]``).
     """
     schema, resolved_name = _resolve_base_table(conn, table)
     qualified = f"{schema}.{resolved_name}"
@@ -584,7 +722,14 @@ def _delete_outside_departments(
 
 
 def _filter_demo_departments(conn: psycopg2.extensions.connection) -> None:
-    """Delete rows outside demo departments from all tables with coddep."""
+    """Delete rows outside demo departments from all tables with ``coddep``.
+
+    Iterates over ``TABLES_WITH_CODDEP`` and deletes rows whose
+    ``coddep`` value is not in ``DVF_DEMO_DEPARTMENTS``.
+
+    Args:
+        conn: Open psycopg2 connection.
+    """
     departments = DVF_DEMO_DEPARTMENTS
     if not departments:
         logger.warning("DVF_DEMO_DEPARTMENTS is empty -- skipping filter.")
@@ -603,7 +748,14 @@ def _filter_demo_departments(conn: psycopg2.extensions.connection) -> None:
 # Verification
 # ---------------------------------------------------------------------------
 def _check_principal_tables(tables: list[str]) -> bool:
-    """Check that all principal tables exist. Return False if any missing."""
+    """Check that all principal tables exist.
+
+    Args:
+        tables: List of table names found in the database.
+
+    Returns:
+        True if every expected principal table is present, False otherwise.
+    """
     missing = [t for t in EXPECTED_PRINCIPAL_TABLES if t not in tables]
     if missing:
         logger.error("Missing principal tables: %s", missing)
@@ -612,7 +764,11 @@ def _check_principal_tables(tables: list[str]) -> bool:
 
 
 def _log_missing_annexe_tables(tables: list[str]) -> None:
-    """Log a warning if any annexe tables are missing."""
+    """Log a warning if any annexe tables are missing.
+
+    Args:
+        tables: List of table names found in the database.
+    """
     missing = [t for t in EXPECTED_ANNEXE_TABLES if t not in tables]
     if missing:
         logger.warning("Missing annexe tables: %s", missing)
@@ -621,7 +777,12 @@ def _log_missing_annexe_tables(tables: list[str]) -> None:
 def _log_table_row_counts(
     conn: psycopg2.extensions.connection, tables: list[str]
 ) -> None:
-    """Log row counts for each principal table that exists."""
+    """Log row counts for each principal table that exists.
+
+    Args:
+        conn: Open psycopg2 connection.
+        tables: List of table names found in the database.
+    """
     for table in EXPECTED_PRINCIPAL_TABLES:
         if table in tables:
             count = _count_rows(conn, table)
@@ -659,7 +820,14 @@ def _verify_restore(conn: psycopg2.extensions.connection) -> bool:
 # Main workflow helpers
 # ---------------------------------------------------------------------------
 def _execute_sql_files(sql_files: list[Path]) -> list[int]:
-    """Execute each SQL file via psql and return exit codes."""
+    """Execute each SQL file via psql and return exit codes.
+
+    Args:
+        sql_files: Ordered list of SQL file paths to execute.
+
+    Returns:
+        List of psql exit codes, one per file, in the same order.
+    """
     exit_codes: list[int] = []
     for sql_file in sql_files:
         code = _run_psql_file(sql_file)
@@ -668,12 +836,26 @@ def _execute_sql_files(sql_files: list[Path]) -> list[int]:
 
 
 def _check_all_failed(exit_codes: list[int]) -> bool:
-    """Return True if all SQL restores returned non-zero exit codes."""
+    """Return True if all SQL restores returned non-zero exit codes.
+
+    Args:
+        exit_codes: List of psql exit codes.
+
+    Returns:
+        True if the list is non-empty and every code is non-zero.
+    """
     return len(exit_codes) > 0 and all(c != 0 for c in exit_codes)
 
 
 def _post_restore_processing(conn: psycopg2.extensions.connection) -> bool:
-    """Run demo filtering and verification. Return True if successful."""
+    """Run demo-mode filtering (if applicable) and verification.
+
+    Args:
+        conn: Open psycopg2 connection.
+
+    Returns:
+        True if verification passes, False otherwise.
+    """
     if DVF_MODE == "demo":
         _filter_demo_departments(conn)
     return _verify_restore(conn)
@@ -699,7 +881,11 @@ def _get_sql_files_or_exit() -> list[Path]:
 def _prepare_database(sql_files: list[Path]) -> str | None:
     """Ensure PostGIS is available and create national data tables if needed.
 
-    Returns the national data schema name, or None for demo format.
+    Args:
+        sql_files: Sorted list of SQL dump files.
+
+    Returns:
+        The national data schema name, or ``None`` for demo format.
     """
     conn = get_pg_connection()
     try:

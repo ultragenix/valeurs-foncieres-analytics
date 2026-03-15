@@ -66,11 +66,11 @@ Three services defined, two currently active:
 
 All ports are bound to `127.0.0.1` (localhost only). All services have healthchecks configured.
 
-The DVF PostgreSQL container is **ephemeral** -- it has no persistent volume. It is started for ingestion (restore SQL dump + export to CSV), then destroyed. It is not part of the runtime stack.
+The DVF PostgreSQL container is **ephemeral** -- it has no persistent volume. It is started for ingestion (restore SQL dump + export to CSV), then destroyed. It is not part of the runtime stack. It uses a custom `postgresql.conf` tuned for bulk-load operations (increased shared_buffers, work_mem, WAL settings) and `shm_size: 2g` to prevent shared memory exhaustion during large restores.
 
 ### 3. Ingestion Package (`ingestion/`)
 
-The `ingestion` package contains 7 modules that form the data pipeline from source to BigQuery. All modules share configuration through `ingestion/config.py`.
+The `ingestion` package contains 8 modules that form the data pipeline from source to BigQuery. All modules share configuration through `ingestion/config.py`.
 
 #### 3.1 Shared Configuration (`config.py`)
 
@@ -94,7 +94,7 @@ The downloaded `.7z` archive is extracted with `py7zr`. Archive members are vali
 
 #### 3.3 Restore Dump (`restore_dump.py`)
 
-Restores SQL files into the ephemeral PostgreSQL container using `psql` subprocess calls. In demo mode (`DVF_MODE=demo`), filters data to keep only the configured departments (default: Paris 75, Marseille 13) by deleting rows outside those departments from all tables with a `coddep` column.
+Restores SQL files into the ephemeral PostgreSQL container using `psql` subprocess calls. In demo mode (`DVF_MODE=demo`), filters data to keep only the configured departments (default: `DVF_DEMO_DEPARTMENTS=974`, La Reunion) by deleting rows outside those departments from all tables with a `coddep` column.
 
 After restore, verifies that principal tables exist and logs row counts.
 
@@ -129,22 +129,25 @@ Uses streaming download with progress bar. Validates downloaded files contain va
 #### 3.6 Upload to GCS (`upload_to_gcs.py`)
 
 Uploads exported files to the configured GCS bucket with organized prefixes:
-- CSV files to `raw/dvf/` prefix
+- CSV files to `raw/dvf/` prefix (demo/standard mode)
 - GeoJSON files to `raw/geojson/` prefix
+
+Additionally provides `upload_chunk_to_gcs()` for chunked ingestion, which uploads each chunk's CSV files to per-table subdirectories (e.g., `raw/dvf/mutation/chunk_001.csv`). Header-only CSV files (< 1 KB) are automatically skipped.
 
 Uses the shared `get_gcs_client()` from config. Progress displayed with tqdm.
 
-**Input**: `data/export/*.csv` + `data/geojson/*.geojson`
+**Input**: `data/export/*.csv` + `data/geojson/*.geojson` (or chunk directory for chunked mode)
 **Output**: Files in `gs://<bucket>/raw/dvf/` and `gs://<bucket>/raw/geojson/`
 
 #### 3.7 Load to BigQuery (`load_to_bigquery.py`)
 
-Loads all data from GCS into BigQuery raw tables (`dvf_raw` dataset). Handles two data formats:
+Loads all data from GCS into BigQuery raw tables (`dvf_raw` dataset). Handles two data formats and two layout modes:
 
 **CSV loading** (DVF+ tables):
 - Discovers all `.csv` blobs under `raw/dvf/` prefix in GCS
-- Table name derived from filename stem (e.g., `mutation.csv` becomes table `mutation`)
-- Uses `autodetect=True` for schema inference
+- Groups blobs by table name, handling both flat layout (`raw/dvf/mutation.csv`) and chunked layout (`raw/dvf/mutation/chunk_001.csv`)
+- Single-file tables: uses `autodetect=True` for schema inference
+- Multi-file tables (chunked): uses wildcard URIs (`gs://bucket/raw/dvf/mutation/*`) with an explicit all-STRING schema (except `anneemut` as INT64) to avoid autodetect type conflicts across chunk files
 - Uses `WRITE_TRUNCATE` for idempotent reloads
 - The `mutation` table gets special treatment: integer range partitioning on `anneemut` (2014--2026, interval 1) and clustering on `coddep`, `codtypbien`
 
@@ -152,12 +155,32 @@ Loads all data from GCS into BigQuery raw tables (`dvf_raw` dataset). Handles tw
 - Discovers all `.geojson` blobs under `raw/geojson/` prefix
 - Downloads and parses each GeoJSON FeatureCollection in memory
 - Each feature is converted to a flat dict row: properties as columns + geometry as JSON string
-- Loaded via `load_table_from_json` with a partial schema ensuring `geometry` is STRING
+- Loaded via `load_table_from_json` with an explicit all-STRING schema to prevent autodetect from misinterpreting codes like `2A001` (Corse) as integers
 - File-to-table mapping: `departements-1000m.geojson` / `departments.geojson` to `geo_departments`, `communes-1000m.geojson` / `communes.geojson` to `geo_communes`
 - Geometry-to-GEOGRAPHY conversion happens in the dbt staging layer via `ST_GEOGFROMGEOJSON()`
 
 **Input**: GCS bucket contents
 **Output**: BigQuery tables in `dvf_raw` dataset
+
+#### 3.8 Chunked Ingestion (`chunked_ingest.py`)
+
+Orchestrates full-France ingestion by processing department SQL files in configurable batches. Designed for the national DVF+ dump where restoring all departments at once would exceed PostgreSQL shared memory and disk limits.
+
+**Flow per chunk:**
+1. Discover department SQL files (and the annexe reference file)
+2. Read JSON progress file to determine which departments are already completed
+3. Group remaining department files into chunks of `DVF_CHUNK_SIZE`
+4. For each chunk: reset PG data schemas, restore department files, export to CSV, move CSVs to chunk subdirectory, upload to GCS per-table subdirectories, delete local files, save progress
+
+**Progress tracking:**
+- `data/chunked_progress.json` stores completed department filenames and per-table row counts
+- Atomic writes (write-to-temp-then-rename) prevent corruption on crash
+- On restart, already-completed departments are skipped automatically
+
+**Command:** `make ingest-chunked` (or `uv run python -m ingestion.chunked_ingest`)
+
+**Input**: Department SQL files in `data/` or `data/1_DONNEES_LIVRAISON/`
+**Output**: Per-table chunk files in GCS (`raw/dvf/{table}/chunk_NNN.csv`)
 
 ### 4. BigQuery Raw Tables
 
@@ -312,7 +335,7 @@ All external connections use HTTPS. No inbound connections from the internet are
 
 ## Data Volumes
 
-| Stage | Demo mode (2 depts) | Full mode (all France) |
+| Stage | Demo mode (1 dept) | Full mode (all France) |
 |-------|--------------------|-----------------------|
 | SQL dump download | ~100 MB | ~4--5 GB |
 | PostgreSQL restore | ~200 MB disk | ~15 GB disk |
@@ -329,7 +352,28 @@ The `DVF_MODE` environment variable controls the pipeline scope:
 
 | Mode | Value | Departments | Duration | Purpose |
 |------|-------|------------|----------|---------|
-| Demo | `demo` (default) | 2 (Paris + Marseille) | ~10 minutes | Peer reviewer reproduction |
+| Demo | `demo` (default) | 1 (La Reunion) | ~5 minutes | Peer reviewer reproduction |
 | Full | `full` | All 101 | ~1--2 hours | Production dashboard |
 
-In demo mode, the restore step filters data to keep only configured departments (default: `DVF_DEMO_DEPARTMENTS=75,13`). All downstream steps (export, upload, BigQuery load, dbt transforms) work with the filtered dataset. The BigQuery partitioning and clustering configuration is identical in both modes.
+In demo mode, the restore step filters data to keep only configured departments (default: `DVF_DEMO_DEPARTMENTS=974`). All downstream steps (export, upload, BigQuery load, dbt transforms) work with the filtered dataset. The BigQuery partitioning and clustering configuration is identical in both modes.
+
+### Chunked Ingestion (Full-France)
+
+For full-France ingestion, the chunked ingestion module (`ingestion/chunked_ingest.py`) processes department SQL files in configurable batches to avoid PostgreSQL WAL overflow and shared memory exhaustion.
+
+**Chunk cycle:**
+1. Reset PostgreSQL data schemas (preserve `dvf_plus_annexe`)
+2. Restore chunk's department SQL files via `psql`
+3. Export all tables to CSV
+4. Move CSVs to a chunk subdirectory (`data/export/chunk_NNN/`)
+5. Upload chunk CSVs to per-table GCS subdirectories (`raw/dvf/{table}/chunk_NNN.csv`)
+6. Delete local chunk directory to free disk space
+7. Save progress to `data/chunked_progress.json` (atomic write-to-temp-then-rename)
+
+**Key design decisions:**
+- **O(N) upload**: each chunk uploads only its own files to table-specific subdirectories, avoiding the O(N^2) cost of re-uploading accumulated files
+- **Crash-safe resume**: a JSON progress file tracks completed department filenames; on restart, already-processed departments are skipped
+- **Configurable chunk size**: `DVF_CHUNK_SIZE` (default: 10) controls the trade-off between RAM usage and restart overhead
+- **PostgreSQL tuning**: `docker/postgres/postgresql.conf` configures shared_buffers, work_mem, and WAL settings for bulk-load performance; `shm_size: 2g` in docker-compose.yml prevents shared memory exhaustion
+
+**BigQuery wildcard loading**: `load_to_bigquery.py` automatically detects chunked layouts and uses wildcard URIs (`gs://bucket/raw/dvf/mutation/*`) with an explicit all-STRING schema to avoid autodetect type conflicts across chunk files (e.g., Corsican department codes 2A/2B vs numeric codes).

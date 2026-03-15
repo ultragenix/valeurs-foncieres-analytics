@@ -2,6 +2,15 @@
 
 Downloads department and commune boundary polygons (1km generalization)
 for use in BigQuery geographic analysis and Looker Studio choropleth maps.
+
+Inputs:
+    - URLs from the Etalab GeoJSON dataset (2024 edition).
+Outputs:
+    - ``data/geojson/departements-1000m.geojson``
+    - ``data/geojson/communes-1000m.geojson``
+
+Dependencies:
+    ingestion.http_utils -- for streaming HTTP downloads.
 """
 
 import json
@@ -45,7 +54,14 @@ GEOJSON_READ_TIMEOUT: int = 300
 # Download
 # ---------------------------------------------------------------------------
 def _should_skip_download(destination: Path) -> bool:
-    """Return True if the file already exists with non-zero size."""
+    """Return True if the file already exists with non-zero size.
+
+    Args:
+        destination: Path to check.
+
+    Returns:
+        True if the file exists and is non-empty.
+    """
     if destination.exists() and destination.stat().st_size > 0:
         logger.info("File already exists, skipping download: %s", destination.name)
         return True
@@ -55,7 +71,14 @@ def _should_skip_download(destination: Path) -> bool:
 def _download_file(url: str, destination: Path) -> bool:
     """Stream-download a URL to *destination* with a tqdm progress bar.
 
-    Returns True on success, False on failure.
+    Delegates to ``stream_download`` with ``GEOJSON_READ_TIMEOUT``.
+
+    Args:
+        url: The HTTP(S) URL to download.
+        destination: Local file path for the downloaded content.
+
+    Returns:
+        True on success, False on failure.
     """
     return stream_download(url, destination, read_timeout=GEOJSON_READ_TIMEOUT)
 
@@ -64,7 +87,14 @@ def _download_file(url: str, destination: Path) -> bool:
 # Validation
 # ---------------------------------------------------------------------------
 def _parse_geojson(file_path: Path) -> dict | None:
-    """Load and parse a GeoJSON file. Returns None on failure."""
+    """Load and parse a GeoJSON file.
+
+    Args:
+        file_path: Path to the GeoJSON file.
+
+    Returns:
+        Parsed JSON dict on success, or ``None`` if parsing fails.
+    """
     try:
         with open(file_path, "r", encoding="utf-8") as fh:
             return json.load(fh)
@@ -74,7 +104,15 @@ def _parse_geojson(file_path: Path) -> dict | None:
 
 
 def _validate_geojson(file_path: Path, min_features: int) -> bool:
-    """Check that a GeoJSON file has at least *min_features* features."""
+    """Check that a GeoJSON file has at least *min_features* features.
+
+    Args:
+        file_path: Path to the GeoJSON file.
+        min_features: Minimum expected feature count.
+
+    Returns:
+        True if the file parses correctly and has enough features.
+    """
     data = _parse_geojson(file_path)
     if data is None:
         return False
@@ -117,7 +155,15 @@ def _download_and_validate(
 ) -> Path | None:
     """Download one GeoJSON file if needed and validate it.
 
-    Returns the path on success, None on failure.
+    Skips the download if *destination* already exists with non-zero size.
+
+    Args:
+        filename: GeoJSON filename (used for threshold lookup).
+        url: HTTP(S) URL to download from.
+        destination: Local file path for the download.
+
+    Returns:
+        The *destination* path on success, or ``None`` on failure.
     """
     if not _should_skip_download(destination):
         if not _download_file(url, destination):

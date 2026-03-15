@@ -1,3 +1,11 @@
+# ------------------------------------------------------------------
+# _intermediate__models.yml — Schema declarations for intermediate models.
+#
+# Intermediate models flatten the DVF+ star schema into a single wide
+# row per mutation by aggregating child tables. They are materialized
+# as views (configured in dbt_project.yml).
+# ------------------------------------------------------------------
+
 version: 2
 
 models:
@@ -6,28 +14,31 @@ models:
       Enriched transactions at one row per mutation. Joins mutation data
       with aggregated disposition, local, and parcelle information.
       Commune code is sourced from parcelle data (via disposition_parcelle)
-      with fallback to mutation's own commune code.
+      with fallback to the mutation's own INSEE code. This model serves
+      as the single input for the fct_transactions mart.
     columns:
       - name: mutation_id
-        description: Primary key (one row per mutation)
+        description: Primary key, one row per mutation (from stg_dvf__mutations)
         tests:
           - unique
           - not_null
       - name: transaction_date
-        description: Transaction date
+        description: Transaction date (from stg_dvf__mutations)
       - name: transaction_year
-        description: Transaction year
+        description: Transaction year (from stg_dvf__mutations)
         tests:
           - not_null
       - name: department_code
-        description: Department code
+        description: Department code (from stg_dvf__mutations)
         tests:
           - not_null
       - name: commune_code
-        description: INSEE commune code from parcelle or mutation fallback
+        description: >
+          INSEE commune code, resolved from parcelle data when available,
+          with fallback to the mutation's own insee_code column
       - name: transaction_price_eur
-        description: Transaction price in EUR (always > 0)
+        description: Transaction price in EUR (always > 0, inherited from stg_dvf__mutations filter)
         tests:
           - not_null
       - name: property_type_code
-        description: GnDVF property type code
+        description: GnDVF hierarchical property type code

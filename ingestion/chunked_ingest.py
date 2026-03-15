@@ -1,10 +1,31 @@
 """Chunked full-France DVF+ ingestion with crash-safe resume.
 
-Processes department SQL files in configurable batches to avoid
-PostgreSQL WAL overflow and shared memory exhaustion. Each chunk
-cycle: restore into PG, export to CSV, upload chunk to GCS per-table
-subdirectories, delete local chunk directory.
-A JSON progress file tracks completed departments for resume.
+Processes department SQL files in configurable batches (default 10) to
+avoid PostgreSQL WAL (Write-Ahead Log) overflow and shared memory
+exhaustion on resource-constrained hosts. Each chunk cycle:
+
+  1. Reset PostgreSQL data tables (except annexe, shared across chunks).
+  2. Restore the chunk's department SQL files via ``psql``.
+  3. Export tables to CSV in a per-chunk subdirectory.
+  4. Upload chunk CSVs to per-table GCS subdirectories.
+  5. Delete local chunk directory to free disk space.
+  6. Update the JSON progress file.
+
+The progress file (``data/chunked_progress.json``) tracks completed
+department filenames, enabling crash-safe resume without re-processing
+already-uploaded departments.
+
+Inputs:
+    - Extracted national DVF+ ``.sql`` files in ``data/``.
+Outputs:
+    - Per-table chunked CSV objects in GCS (e.g.
+      ``raw/dvf/mutation/chunk_001.csv``).
+    - Progress file ``data/chunked_progress.json``.
+
+Dependencies:
+    ingestion.restore_dump  -- for SQL restore helpers.
+    ingestion.export_tables -- for PostgreSQL-to-CSV export.
+    ingestion.upload_to_gcs -- for GCS upload.
 """
 
 from __future__ import annotations
@@ -57,7 +78,14 @@ def _discover_department_files(
 
     Searches both *data_dir* and its ``1_DONNEES_LIVRAISON/``
     subdirectory. The annexe file is identified by ``annexe`` in its
-    filename. Returns ``(annexe_path, sorted_department_files)``.
+    filename.
+
+    Args:
+        data_dir: Base data directory to search.
+
+    Returns:
+        Tuple of ``(annexe_path, sorted_department_files)`` where
+        ``annexe_path`` is ``None`` if no annexe file is found.
     """
     all_sql = _find_sql_files(data_dir)
     annexe_file = _extract_annexe_file(all_sql)
@@ -66,7 +94,14 @@ def _discover_department_files(
 
 
 def _extract_annexe_file(sql_files: list[Path]) -> Path | None:
-    """Return the first SQL file containing 'annexe' in its name."""
+    """Return the first SQL file containing ``annexe`` in its name.
+
+    Args:
+        sql_files: List of SQL file paths to search.
+
+    Returns:
+        Path to the annexe file, or ``None`` if not found.
+    """
     for sql_file in sql_files:
         if "annexe" in sql_file.name.lower():
             return sql_file
@@ -74,7 +109,14 @@ def _extract_annexe_file(sql_files: list[Path]) -> Path | None:
 
 
 def _extract_department_files(sql_files: list[Path]) -> list[Path]:
-    """Return SQL files that are NOT the annexe file, sorted by name."""
+    """Return SQL files that are NOT the annexe file, sorted by name.
+
+    Args:
+        sql_files: List of all SQL file paths.
+
+    Returns:
+        Sorted list of department data SQL files.
+    """
     return sorted(
         [f for f in sql_files if "annexe" not in f.name.lower()],
         key=lambda p: p.name,
@@ -90,6 +132,13 @@ def _read_progress(progress_file: Path) -> dict[str, Any]:
     Returns a default dict if the file is missing or contains invalid
     JSON. The default has empty ``completed_departments`` and
     ``tables_exported`` fields.
+
+    Args:
+        progress_file: Path to the JSON progress file.
+
+    Returns:
+        Dict with ``completed_departments`` (list of filenames) and
+        ``tables_exported`` (dict of table name to row count).
     """
     default: dict[str, Any] = {
         "completed_departments": [],
@@ -113,7 +162,11 @@ def _write_progress(progress_file: Path, progress: dict[str, Any]) -> None:
 
     Writes to a temporary file in the same directory, then renames it
     to the target path. This prevents corruption if the process is
-    killed mid-write.
+    killed mid-write (the rename is atomic on POSIX filesystems).
+
+    Args:
+        progress_file: Target path for the progress JSON file.
+        progress: Dict to serialize (must be JSON-serializable).
     """
     progress_file.parent.mkdir(parents=True, exist_ok=True)
     fd, tmp_path = tempfile.mkstemp(
@@ -136,7 +189,15 @@ def _filter_remaining(
     department_files: list[Path],
     completed: list[str],
 ) -> list[Path]:
-    """Exclude already-completed department files by filename."""
+    """Exclude already-completed department files by filename.
+
+    Args:
+        department_files: All department SQL file paths.
+        completed: List of filenames already processed.
+
+    Returns:
+        Filtered list of paths not yet completed.
+    """
     completed_set = set(completed)
     return [f for f in department_files if f.name not in completed_set]
 
@@ -145,7 +206,17 @@ def _group_into_chunks(
     files: list[Path],
     chunk_size: int,
 ) -> list[list[Path]]:
-    """Split *files* into groups of *chunk_size*."""
+    """Split *files* into groups of *chunk_size*.
+
+    The last group may be smaller than *chunk_size*.
+
+    Args:
+        files: List of file paths to split.
+        chunk_size: Maximum number of files per group.
+
+    Returns:
+        List of file-path lists (chunks).
+    """
     return [
         files[i : i + chunk_size]
         for i in range(0, len(files), chunk_size)
@@ -156,7 +227,14 @@ def _group_into_chunks(
 # PostgreSQL reset
 # ---------------------------------------------------------------------------
 def _get_dvf_data_schemas(conn: Any) -> list[str]:
-    """Return all dvf_plus_* data schemas (excluding dvf_plus_annexe)."""
+    """Return all ``dvf_plus_*`` data schemas (excluding ``dvf_plus_annexe``).
+
+    Args:
+        conn: Open psycopg2 connection.
+
+    Returns:
+        Sorted list of data schema names.
+    """
     query = """
         SELECT schema_name
         FROM information_schema.schemata
@@ -170,10 +248,14 @@ def _get_dvf_data_schemas(conn: Any) -> list[str]:
 
 
 def _reset_data_tables(conn: Any) -> None:
-    """DROP dvf_plus_* data schemas and dvf compatibility views.
+    """DROP ``dvf_plus_*`` data schemas and ``dvf`` compatibility views.
 
     Preserves ``dvf_plus_annexe`` (annexe data is shared across all
-    chunks). Recreates empty ``dvf`` schema for compatibility views.
+    chunks). The ``dvf`` schema is dropped to clear stale views; it
+    will be recreated by ``_create_compatibility_views``.
+
+    Args:
+        conn: Open psycopg2 connection (changes are committed).
     """
     data_schemas = _get_dvf_data_schemas(conn)
     with conn.cursor() as cur:
@@ -198,7 +280,13 @@ def _restore_chunk(
 
     Ensures PostGIS is available, creates data tables from COPY
     command parsing, restores SQL files via psql, and creates
-    compatibility views.
+    compatibility views for downstream export.
+
+    Args:
+        annexe_file: Path to the annexe SQL file, or ``None``.
+        department_files: Department SQL files for this chunk.
+        is_first_chunk: If True, the annexe file is included in the
+            restore (it only needs to be loaded once).
     """
     conn = get_pg_connection()
     try:
@@ -219,7 +307,16 @@ def _build_restore_file_list(
     department_files: list[Path],
     is_first_chunk: bool,
 ) -> list[Path]:
-    """Build the ordered list of SQL files to restore for this chunk."""
+    """Build the ordered list of SQL files to restore for this chunk.
+
+    Args:
+        annexe_file: Path to the annexe SQL file, or ``None``.
+        department_files: Department SQL files for this chunk.
+        is_first_chunk: If True, prepend the annexe file.
+
+    Returns:
+        Ordered list of SQL files to execute.
+    """
     files: list[Path] = []
     if is_first_chunk and annexe_file is not None:
         files.append(annexe_file)
@@ -228,14 +325,23 @@ def _build_restore_file_list(
 
 
 def _execute_restore_files(sql_files: list[Path]) -> None:
-    """Execute each SQL file via psql."""
+    """Execute each SQL file via psql.
+
+    Args:
+        sql_files: Ordered list of SQL file paths to execute.
+    """
     for sql_file in sql_files:
         logger.info("Restoring %s ...", sql_file.name)
         _run_psql_file(sql_file)
 
 
 def _create_views_if_national(data_schema: str | None) -> None:
-    """Create compatibility views if the dump uses national format."""
+    """Create compatibility views if the dump uses national format.
+
+    Args:
+        data_schema: National data schema name, or ``None`` for demo
+            format (in which case this function is a no-op).
+    """
     if data_schema is None:
         return
     conn = get_pg_connection()
@@ -249,12 +355,26 @@ def _create_views_if_national(data_schema: str | None) -> None:
 # Per-chunk export and upload
 # ---------------------------------------------------------------------------
 def _chunk_dir(chunk_index: int) -> Path:
-    """Return the path for a chunk's export directory."""
+    """Return the path for a chunk's export directory.
+
+    Args:
+        chunk_index: Zero-based chunk index (displayed as 1-based).
+
+    Returns:
+        Path like ``data/export/chunk_001/``.
+    """
     return DATA_EXPORT_DIR / f"{CHUNK_DIR_PREFIX}{chunk_index + 1:03d}"
 
 
 def _move_exports_to_chunk_dir(chunk_index: int) -> Path:
-    """Move exported CSV files from DATA_EXPORT_DIR to chunk subdirectory."""
+    """Move exported CSV files from ``DATA_EXPORT_DIR`` to chunk subdirectory.
+
+    Args:
+        chunk_index: Zero-based chunk index.
+
+    Returns:
+        Path to the chunk subdirectory containing the moved files.
+    """
     target = _chunk_dir(chunk_index)
     target.mkdir(parents=True, exist_ok=True)
     for csv_file in DATA_EXPORT_DIR.glob("*.csv"):
@@ -263,7 +383,14 @@ def _move_exports_to_chunk_dir(chunk_index: int) -> Path:
 
 
 def _count_chunk_rows(chunk_dir: Path) -> dict[str, int]:
-    """Count data rows per table in a chunk directory (lines minus header)."""
+    """Count data rows per table in a chunk directory (lines minus header).
+
+    Args:
+        chunk_dir: Path to the chunk subdirectory containing CSV files.
+
+    Returns:
+        Dict mapping table name (CSV stem) to row count.
+    """
     counts: dict[str, int] = {}
     for csv_file in sorted(chunk_dir.glob("*.csv")):
         table_name = csv_file.stem
@@ -274,7 +401,17 @@ def _count_chunk_rows(chunk_dir: Path) -> dict[str, int]:
 
 
 def _upload_chunk(chunk_dir: Path, chunk_index: int) -> int:
-    """Upload this chunk's files to GCS and clean up local directory."""
+    """Upload this chunk's files to GCS and clean up local directory.
+
+    After upload, the local chunk directory is deleted to free disk space.
+
+    Args:
+        chunk_dir: Path to the chunk subdirectory.
+        chunk_index: Zero-based chunk index.
+
+    Returns:
+        Number of files uploaded to GCS.
+    """
     count = upload_chunk_to_gcs(chunk_dir, chunk_index)
     shutil.rmtree(chunk_dir)
     return count
@@ -290,7 +427,15 @@ def _log_chunk_summary(
     row_counts: dict[str, int],
     elapsed: float,
 ) -> None:
-    """Log a summary after a chunk completes."""
+    """Log a summary after a chunk completes.
+
+    Args:
+        chunk_index: Zero-based chunk index.
+        total_chunks: Total number of chunks.
+        dept_names: Department filenames in this chunk.
+        row_counts: Dict of table name to row count.
+        elapsed: Wall-clock seconds for this chunk.
+    """
     total_rows = sum(row_counts.values())
     logger.info(
         "Chunk %d/%d complete: %d departments, %s rows, %.1f seconds.",
@@ -307,7 +452,19 @@ def _update_progress_after_chunk(
     dept_names: list[str],
     row_counts: dict[str, int],
 ) -> dict[str, Any]:
-    """Update the progress dict with newly completed departments."""
+    """Update the progress dict with newly completed departments.
+
+    Appends department names to ``completed_departments`` and
+    accumulates row counts in ``tables_exported``.
+
+    Args:
+        progress: Mutable progress dict (modified in place).
+        dept_names: Department filenames completed in this chunk.
+        row_counts: Dict of table name to row count for this chunk.
+
+    Returns:
+        The updated *progress* dict (same reference).
+    """
     progress["completed_departments"].extend(dept_names)
     existing = progress.get("tables_exported", {})
     for table, count in row_counts.items():
@@ -346,7 +503,13 @@ def _log_resume_status(
     all_files: list[Path],
     progress: dict[str, Any],
 ) -> None:
-    """Log how many departments are remaining vs completed."""
+    """Log how many departments are remaining vs completed.
+
+    Args:
+        remaining: Department files still to process.
+        all_files: All discovered department files.
+        progress: Progress dict (used for context, not modified).
+    """
     completed = len(all_files) - len(remaining)
     if completed > 0:
         logger.info(
@@ -361,7 +524,13 @@ def _process_all_chunks(
     chunks: list[list[Path]],
     progress: dict[str, Any],
 ) -> None:
-    """Process each chunk sequentially."""
+    """Process each chunk sequentially.
+
+    Args:
+        annexe_file: Path to the annexe SQL file, or ``None``.
+        chunks: List of department file groups (one per chunk).
+        progress: Mutable progress dict (updated after each chunk).
+    """
     if not chunks:
         logger.info("No departments to process.")
         return
@@ -375,7 +544,15 @@ def _process_all_chunks(
 
 
 def _reset_if_not_first(is_first_chunk: bool) -> None:
-    """Reset data tables if this is not the first chunk."""
+    """Reset data tables if this is not the first chunk.
+
+    The first chunk starts with an empty database, so no reset is needed.
+    Subsequent chunks must drop and recreate the data schema to avoid
+    accumulating data across chunks.
+
+    Args:
+        is_first_chunk: True if this is the first chunk being processed.
+    """
     if not is_first_chunk:
         conn = get_pg_connection()
         try:
@@ -392,7 +569,16 @@ def _finalize_chunk(
     start: float,
     progress: dict[str, Any],
 ) -> None:
-    """Log summary and save progress after a successful chunk."""
+    """Log summary and save progress after a successful chunk.
+
+    Args:
+        chunk_index: Zero-based chunk index.
+        total_chunks: Total number of chunks.
+        dept_names: Department filenames completed in this chunk.
+        row_counts: Dict of table name to row count for this chunk.
+        start: ``time.monotonic()`` timestamp when the chunk started.
+        progress: Mutable progress dict (updated and written to disk).
+    """
     elapsed = time.monotonic() - start
     _log_chunk_summary(chunk_index, total_chunks, dept_names, row_counts, elapsed)
     _update_progress_after_chunk(progress, dept_names, row_counts)
@@ -407,7 +593,19 @@ def _process_single_chunk(
     total_chunks: int,
     progress: dict[str, Any],
 ) -> None:
-    """Process one chunk: reset, restore, export, upload, save progress."""
+    """Process one chunk: reset PG, restore SQL, export CSV, upload, save.
+
+    This is the core loop body for chunked ingestion. Each call handles
+    one batch of department files end-to-end.
+
+    Args:
+        annexe_file: Path to the annexe SQL file, or ``None``.
+        chunk_files: Department SQL files for this chunk.
+        is_first_chunk: True if this is the first chunk (annexe loaded).
+        chunk_index: Zero-based chunk index.
+        total_chunks: Total number of chunks.
+        progress: Mutable progress dict (updated after completion).
+    """
     dept_names = [f.name for f in chunk_files]
     logger.info("Chunk %d/%d: processing %s", chunk_index + 1, total_chunks, dept_names)
     start = time.monotonic()

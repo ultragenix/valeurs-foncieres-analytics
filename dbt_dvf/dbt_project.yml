@@ -1,23 +1,39 @@
+# ------------------------------------------------------------------
+# dbt_project.yml — dbt project configuration for valeurs-foncieres-analytics.
+#
+# This file defines the project name, directory layout, and default
+# materialization strategies for each model layer.
+# ------------------------------------------------------------------
+
+# Project metadata
 name: dbt_dvf
 version: '1.0.0'
-config-version: 2
+config-version: 2                  # Required: dbt config format version
 
+# Connection profile (defined in profiles.yml)
 profile: dbt_dvf
 
-model-paths: ["models"]
-test-paths: ["tests"]
-macro-paths: ["macros"]
-analysis-paths: ["analyses"]
-target-path: "target"
-clean-targets:
-  - "target"
-  - "dbt_packages"
+# Directory layout
+model-paths: ["models"]            # SQL model files
+test-paths: ["tests"]              # Custom data test SQL files
+macro-paths: ["macros"]            # Jinja macros (e.g. generate_schema_name)
+analysis-paths: ["analyses"]       # Ad-hoc analysis SQL files (not materialized)
+target-path: "target"              # Compiled SQL and run artifacts
 
+# Directories cleaned by `dbt clean`
+clean-targets:
+  - "target"                       # Compiled artifacts
+  - "dbt_packages"                 # Installed package source code
+
+# Default materialization per model layer:
+#   - staging + intermediate: VIEWS (no data duplication, always fresh)
+#   - marts: TABLES (materialized for dashboard query performance)
+# Individual models can override via {{ config(materialized='...') }}
 models:
   dbt_dvf:
     staging:
-      +materialized: view
+      +materialized: view          # Lightweight views on top of raw data
     intermediate:
-      +materialized: view
+      +materialized: view          # Pre-aggregation views, no persistence
     marts:
-      +materialized: table
+      +materialized: table         # Persisted tables for analytics queries

@@ -1,3 +1,17 @@
+# =============================================================================
+# DVF+ Analytics — Kestra Pipeline Flow
+# =============================================================================
+# End-to-end orchestration for the DVF data pipeline. Tasks run sequentially
+# (top to bottom) unless wrapped in a Parallel block. The DAG is:
+#
+#   download -> start_postgres -> restore -> [export_tables || download_geojson]
+#            -> stop_postgres -> upload -> load_bigquery -> dbt_transform
+#
+# Deploy this flow to Kestra:  make kestra-deploy
+# Trigger a run:               make pipeline
+# Monitor via web UI:          http://localhost:8080
+# =============================================================================
+
 id: dvf-pipeline
 namespace: dvf
 description: >
@@ -7,6 +21,9 @@ description: >
   BigQuery raw tables, and runs dbt transformations (staging, intermediate,
   marts).
 
+# ---------------------------------------------------------------------------
+# Pipeline input: select demo (1-2 departments, ~10 min) or full (all France)
+# ---------------------------------------------------------------------------
 inputs:
   - id: mode
     type: ENUM
@@ -18,6 +35,11 @@ inputs:
       Pipeline mode. "demo" processes 1-2 departments (~10 min),
       "full" processes all of France (~2 hours).
 
+# ---------------------------------------------------------------------------
+# Task defaults: environment variables injected into every shell task.
+# These are read from Kestra's server-level environment variables (envs.*),
+# which mirror the values in .env.
+# ---------------------------------------------------------------------------
 taskDefaults:
   - type: io.kestra.plugin.scripts.shell.Commands
     values:
@@ -38,17 +60,25 @@ taskDefaults:
         DVF_DEMO_DEPARTMENTS: "{{ envs.DVF_DEMO_DEPARTMENTS }}"
         DBT_PROFILES_DIR: "{{ envs.DBT_PROFILES_DIR }}"
 
+# =============================================================================
+# Pipeline Tasks (sequential unless wrapped in Parallel)
+# =============================================================================
 tasks:
+  # --- Step 1: Download the DVF+ SQL dump from Cerema Box -----------------
+  # Network-dependent: retry 3 times with 30s delay on failure.
   - id: download
     type: io.kestra.plugin.scripts.shell.Commands
     description: Download DVF+ SQL dump from Cerema
     retry:
-      type: constant
-      maxAttempt: 3
-      interval: PT30S
+      type: constant            # Fixed delay between retries (not exponential)
+      maxAttempt: 3             # Try up to 3 times total
+      interval: PT30S           # Wait 30 seconds between attempts
     commands:
       - uv run python -m ingestion.download_dvf
 
+  # --- Step 2: Start the ephemeral PostgreSQL container --------------------
+  # Uses docker compose to start the PostGIS-enabled container defined in
+  # docker-compose.yml. Waits for it to accept connections before proceeding.
   - id: start_postgres
     type: io.kestra.plugin.scripts.shell.Commands
     description: Start ephemeral PostgreSQL container and wait for healthy
@@ -57,6 +87,10 @@ tasks:
       - sleep 5
       - docker compose exec postgres pg_isready -U ${POSTGRES_USER:-dvf} -d ${POSTGRES_DB:-dvf}
 
+  # --- Step 3: Restore the SQL dump into PostgreSQL ------------------------
+  # Uses pg_restore to load the .sql.gz dump. In demo mode, only the
+  # departments listed in DVF_DEMO_DEPARTMENTS are restored.
+  # Network-independent, but may fail on corrupt dumps — retry logic added.
   - id: restore
     type: io.kestra.plugin.scripts.shell.Commands
     description: Restore DVF+ SQL dump into PostgreSQL container
@@ -67,6 +101,11 @@ tasks:
     commands:
       - uv run python -m ingestion.restore_dump
 
+  # --- Step 4: Export CSV + download GeoJSON (parallel) --------------------
+  # These two tasks are independent and run concurrently:
+  #   - export_tables:    COPY FROM PostgreSQL to local CSV files
+  #   - download_geojson: fetch admin boundary GeoJSON from Etalab (HTTP)
+  # Both must complete before the pipeline proceeds to stop_postgres.
   - id: export_and_geojson
     type: io.kestra.plugin.core.flow.Parallel
     description: Export PostgreSQL tables to CSV and download GeoJSON boundaries (parallel)
@@ -83,24 +122,39 @@ tasks:
         commands:
           - uv run python -m ingestion.download_geojson
 
+  # --- Step 5: Stop PostgreSQL (cleanup) -----------------------------------
+  # The database is no longer needed — CSV exports are on disk.
+  # Stopping early frees memory for the remaining GCS/BigQuery steps.
   - id: stop_postgres
     type: io.kestra.plugin.scripts.shell.Commands
     description: Stop and remove ephemeral PostgreSQL container (cleanup)
     commands:
       - docker compose down postgres
 
+  # --- Step 6: Upload to GCS data lake -------------------------------------
+  # Uploads all CSV and GeoJSON files from data/ to the GCS bucket.
+  # Files are organized by type: csv/ and geojson/ prefixes.
   - id: upload
     type: io.kestra.plugin.scripts.shell.Commands
     description: Upload CSV and GeoJSON files to GCS data lake
     commands:
       - uv run python -m ingestion.upload_to_gcs
 
+  # --- Step 7: Load into BigQuery raw tables -------------------------------
+  # Creates BigQuery tables from GCS files using load jobs.
+  # Schema is auto-detected from CSV headers.
   - id: load_bigquery
     type: io.kestra.plugin.scripts.shell.Commands
     description: Load CSV and GeoJSON from GCS into BigQuery raw tables
     commands:
       - uv run python -m ingestion.load_to_bigquery
 
+  # --- Step 8: Run dbt transformations -------------------------------------
+  # Three-phase dbt pipeline:
+  #   1. dbt deps  — install packages (dbt_utils)
+  #   2. dbt run   — build staging views, intermediate models, and mart tables
+  #   3. dbt test  — run data quality tests (unique, not_null, relationships)
+  # If any test fails, the pipeline fails at this stage.
   - id: dbt_transform
     type: io.kestra.plugin.scripts.shell.Commands
     description: Run dbt transformations (staging, intermediate, marts) and tests

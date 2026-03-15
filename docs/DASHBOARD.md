@@ -166,4 +166,4 @@ ORDER BY avg_price_per_sqm DESC;
 
 ## Screenshot
 
-*After creating the dashboard, take a screenshot and save it as `docs/dashboard_screenshot.png`, then reference it here.*
+The live dashboard is accessible at the shareable URL above. A static screenshot has not been added to the repository to keep the repo lightweight. To capture one, open the dashboard URL and use your browser's screenshot feature.

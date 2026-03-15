@@ -1,5 +1,24 @@
+# =============================================================================
+# DVF+ Analytics — Makefile
+# =============================================================================
+# Orchestration shortcuts for the DVF data pipeline.
+# Run `make help` to see all available targets.
+#
+# Quick start:
+#   make setup           # One-time: copy .env, install deps, init Terraform
+#   make terraform-apply # Provision GCP resources (GCS + BigQuery)
+#   make run             # Run the full pipeline (download -> dbt)
+#
+# The pipeline can run two ways:
+#   make run             # Local sequential mode (no Kestra needed)
+#   make pipeline        # Via Kestra API (requires `make docker-up-kestra`)
+# =============================================================================
+
+# Load .env variables into Make's environment (optional file — no error if missing)
 -include .env
 export
+
+# Override these paths so all scripts find credentials and dbt profiles
 GOOGLE_APPLICATION_CREDENTIALS := $(CURDIR)/gcp-sa-key.json
 DBT_PROFILES_DIR := $(CURDIR)/dbt_dvf
 
@@ -10,14 +29,22 @@ DBT_PROFILES_DIR := $(CURDIR)/dbt_dvf
        dashboard-validate check-data \
        run pipeline pipeline-local kestra-deploy test clean
 
+# =============================================================================
+# General
+# =============================================================================
+
 help: ## Show this help message
-	@grep -E '^[a-zA-Z_-]+:.*?## .*$$' $(MAKEFILE_LIST) | \
+	@grep -Eh '^[a-zA-Z_-]+:.*?## .*$$' $(MAKEFILE_LIST) | \
 		awk 'BEGIN {FS = ":.*?## "}; {printf "\033[36m%-20s\033[0m %s\n", $$1, $$2}'
 
 setup: ## Initial project setup (copy .env, install deps, terraform init)
 	@test -f .env || cp .env.example .env
 	uv pip install -r requirements.txt
 	cd terraform && terraform init
+
+# =============================================================================
+# Infrastructure (Terraform — GCS bucket, BigQuery datasets, IAM)
+# =============================================================================
 
 terraform-init: ## Initialize Terraform providers
 	cd terraform && terraform init
@@ -31,6 +58,10 @@ terraform-apply: ## Apply Terraform changes (provision GCP resources)
 terraform-destroy: ## Destroy all Terraform-managed GCP resources
 	cd terraform && terraform destroy
 
+# =============================================================================
+# Docker (PostgreSQL for ingestion, Kestra for orchestration)
+# =============================================================================
+
 docker-up: ## Start ephemeral PostgreSQL container
 	docker compose up -d postgres
 
@@ -39,6 +70,10 @@ docker-down: ## Stop and remove all containers
 
 docker-up-kestra: ## Start Kestra orchestrator (+ its internal PostgreSQL)
 	docker compose up -d kestra
+
+# =============================================================================
+# Ingestion (download, restore, export, upload — individual steps)
+# =============================================================================
 
 ingest-download: ## Download DVF+ SQL dump from Cerema
 	uv run python -m ingestion.download_dvf
@@ -58,8 +93,16 @@ ingest-upload: ## Upload CSV + GeoJSON to GCS
 ingest-chunked: ## Run chunked full-France ingestion (resumable, crash-safe)
 	uv run python -m ingestion.chunked_ingest
 
+# =============================================================================
+# BigQuery (load raw data from GCS)
+# =============================================================================
+
 bq-load: ## Load CSV + GeoJSON from GCS into BigQuery raw tables
 	uv run python -m ingestion.load_to_bigquery
+
+# =============================================================================
+# Full Pipeline (end-to-end: download -> dbt)
+# =============================================================================
 
 run: pipeline-local ## Run full pipeline (sequential, no Kestra)
 
@@ -103,6 +146,10 @@ pipeline-local: check-data ## Run full pipeline locally (sequential, no Kestra r
 	$(MAKE) dbt-build
 	@echo "=== Pipeline complete ==="
 
+# =============================================================================
+# Kestra Orchestration (deploy flows, trigger runs)
+# =============================================================================
+
 kestra-deploy: ## Deploy flow YAML to Kestra via API
 	@echo "Deploying DVF pipeline flow to Kestra..."
 	curl -s -X PUT http://localhost:$${KESTRA_PORT:-8080}/api/v1/flows \
@@ -110,6 +157,10 @@ kestra-deploy: ## Deploy flow YAML to Kestra via API
 		-d @kestra/flows/dvf_pipeline.yml
 	@echo ""
 	@echo "Flow deployed. View at http://localhost:$${KESTRA_PORT:-8080}"
+
+# =============================================================================
+# dbt (transformations: staging views, intermediate models, mart tables)
+# =============================================================================
 
 dbt-deps: ## Install dbt packages (dbt_utils)
 	cd dbt_dvf && uv run dbt deps
@@ -123,6 +174,10 @@ dbt-test: ## Run all dbt tests
 dbt-build: ## Full dbt workflow: deps + run + test
 	cd dbt_dvf && uv run dbt deps && uv run dbt run && uv run dbt test
 
+# =============================================================================
+# Validation and Testing
+# =============================================================================
+
 dashboard-validate: ## Validate dashboard data by running tile queries against BigQuery
 	@echo "=== Tile 1: Transaction Count by Property Type ==="
 	bq query --use_legacy_sql=false --project_id=$(shell grep GCP_PROJECT_ID .env | cut -d= -f2 | cut -d'#' -f1 | tr -d ' ') \
@@ -134,6 +189,10 @@ dashboard-validate: ## Validate dashboard data by running tile queries against B
 
 test: ## Run all tests
 	uv run python -m pytest tests/ -v
+
+# =============================================================================
+# Cleanup (tear down all local and cloud resources)
+# =============================================================================
 
 clean: ## Tear down everything (containers + GCP resources)
 	docker compose down -v

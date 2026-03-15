@@ -1,12 +1,24 @@
+# ------------------------------------------------------------------
+# profiles.yml — dbt connection profile for BigQuery.
+#
+# This file configures how dbt connects to BigQuery. Sensitive values
+# (keyfile path, project ID) are read from environment variables
+# defined in the project .env file.
+#
+# The default target dataset is dvf_staging. Mart models override
+# this via {{ config(schema='dvf_analytics') }} in their SQL files,
+# routed by the generate_schema_name macro in macros/.
+# ------------------------------------------------------------------
+
 dbt_dvf:
-  target: dev
+  target: dev                      # Active target (only 'dev' is defined)
   outputs:
     dev:
-      type: bigquery
-      method: service-account
-      keyfile: "{{ env_var('GOOGLE_APPLICATION_CREDENTIALS') }}"
-      project: "{{ env_var('GCP_PROJECT_ID') }}"
-      dataset: dvf_staging
-      location: europe-west9
-      threads: 4
-      timeout_seconds: 300
+      type: bigquery               # BigQuery adapter (dbt-bigquery)
+      method: service-account      # Authenticate with a GCP service account JSON key
+      keyfile: "{{ env_var('GOOGLE_APPLICATION_CREDENTIALS') }}"  # Path to SA key file
+      project: "{{ env_var('GCP_PROJECT_ID') }}"                  # GCP project ID
+      dataset: dvf_staging         # Default target dataset for models without custom schema
+      location: europe-west9       # BigQuery dataset location (Paris region)
+      threads: 4                   # Parallel model execution threads
+      timeout_seconds: 300         # Query timeout (5 minutes)

@@ -1,7 +1,17 @@
 """Shared configuration for ingestion scripts.
 
-Loads environment variables from .env and exposes typed constants
-and shared utility functions.
+Loads environment variables from the project-root ``.env`` file and
+exposes typed constants for PostgreSQL, GCP, BigQuery, and pipeline
+settings. Also provides shared utility functions for database
+connections, GCS client creation, and logging setup.
+
+All constants are set at import time and remain unchanged for the
+lifetime of the process.
+
+Dependencies:
+    python-dotenv -- for loading ``.env`` files.
+    psycopg2      -- lazy-imported by ``get_pg_connection()``.
+    google-cloud-storage -- lazy-imported by ``get_gcs_client()``.
 """
 
 from __future__ import annotations
@@ -79,7 +89,9 @@ DATA_GEOJSON_DIR: Path = DATA_DIR / "geojson"
 # ---------------------------------------------------------------------------
 # Chunked ingestion settings (full mode)
 # ---------------------------------------------------------------------------
+# Number of department SQL files to process per chunk (full mode).
 DVF_CHUNK_SIZE: int = int(os.getenv("DVF_CHUNK_SIZE", "10"))
+# JSON file tracking which departments have been ingested (for resume).
 DVF_PROGRESS_FILE: Path = DATA_DIR / "chunked_progress.json"
 
 
@@ -109,7 +121,11 @@ LOG_FORMAT: str = "%(asctime)s [%(levelname)s] %(name)s -- %(message)s"
 
 
 def setup_logging(level: int = logging.INFO) -> None:
-    """Configure logging with a consistent format across all modules."""
+    """Configure logging with a consistent format across all modules.
+
+    Args:
+        level: The logging level threshold (default ``logging.INFO``).
+    """
     logging.basicConfig(level=level, format=LOG_FORMAT)
 
 
@@ -119,8 +135,16 @@ def setup_logging(level: int = logging.INFO) -> None:
 def get_pg_connection() -> Any:
     """Open a psycopg2 connection to the DVF PostgreSQL database.
 
-    Returns a ``psycopg2.extensions.connection`` instance (typed as Any to
-    avoid import-time dependency on psycopg2 for modules that don't need it).
+    Uses the ``POSTGRES_*`` constants defined in this module to connect.
+    The caller is responsible for closing the returned connection.
+
+    Returns:
+        A ``psycopg2.extensions.connection`` instance (typed as ``Any`` to
+        avoid an import-time dependency on psycopg2 for modules that do
+        not need it).
+
+    Raises:
+        psycopg2.OperationalError: If the database is unreachable.
     """
     import psycopg2  # noqa: WPS433 -- lazy import
 
@@ -136,8 +160,16 @@ def get_pg_connection() -> Any:
 def get_gcs_client() -> Any:
     """Create and return a GCS storage client.
 
-    Returns a ``google.cloud.storage.Client`` instance (typed as Any to
-    avoid import-time dependency on google-cloud-storage).
+    Authentication relies on the ``GOOGLE_APPLICATION_CREDENTIALS``
+    environment variable pointing to a service-account JSON key.
+
+    Returns:
+        A ``google.cloud.storage.Client`` instance (typed as ``Any`` to
+        avoid an import-time dependency on google-cloud-storage).
+
+    Raises:
+        google.auth.exceptions.DefaultCredentialsError: If credentials
+            are not configured.
     """
     from google.cloud import storage  # noqa: WPS433 -- lazy import
 

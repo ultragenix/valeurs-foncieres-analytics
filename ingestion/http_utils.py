@@ -1,7 +1,13 @@
 """Shared HTTP download utilities for ingestion scripts.
 
-Provides reusable streaming download and file-writing helpers
-used by download_dvf and download_geojson modules.
+Provides reusable streaming download and file-writing helpers used by
+``download_dvf`` and ``download_geojson`` modules. Downloads are
+streamed in fixed-size chunks to avoid loading large files into memory,
+and progress is displayed via ``tqdm``.
+
+Dependencies:
+    requests -- HTTP client library.
+    tqdm     -- progress bar for streaming downloads.
 """
 
 from __future__ import annotations
@@ -28,7 +34,14 @@ def stream_download(
 ) -> bool:
     """Stream-download a URL to *destination* with a tqdm progress bar.
 
-    Returns True on success, False on failure.
+    Args:
+        url: The HTTP(S) URL to download.
+        destination: Local file path where the content will be saved.
+            Parent directories are created automatically.
+        read_timeout: Per-chunk read timeout in seconds (keyword-only).
+
+    Returns:
+        True on success, False if the request fails for any reason.
     """
     response = _initiate_request(url, read_timeout=read_timeout)
     if response is None:
@@ -40,9 +53,18 @@ def stream_download(
 def _initiate_request(
     url: str, *, read_timeout: int = HTTP_READ_TIMEOUT_DEFAULT
 ) -> requests.Response | None:
-    """Open a streaming HTTP connection and return the response.
+    """Open a streaming HTTP GET connection and return the response.
 
-    Returns None if the request fails.
+    Uses ``HTTP_CONNECT_TIMEOUT`` for the connection phase and
+    *read_timeout* for the per-chunk read phase. Follows redirects.
+
+    Args:
+        url: The HTTP(S) URL to request.
+        read_timeout: Per-chunk read timeout in seconds (keyword-only).
+
+    Returns:
+        The open ``requests.Response`` on success, or ``None`` if the
+        request raises any ``RequestException``.
     """
     try:
         response = requests.get(
@@ -61,7 +83,16 @@ def _initiate_request(
 def _write_response_to_file(
     response: requests.Response, destination: Path
 ) -> None:
-    """Write streaming response content to *destination* with progress."""
+    """Write streaming response content to *destination* with progress.
+
+    Reads the response body in ``DOWNLOAD_CHUNK_SIZE`` byte chunks and
+    writes each to disk, updating a ``tqdm`` progress bar. The total
+    size is derived from the ``Content-Length`` header when available.
+
+    Args:
+        response: An open streaming ``requests.Response``.
+        destination: Local file path to write to.
+    """
     total_size = int(response.headers.get("content-length", 0))
     logger.info(
         "Downloading (%s bytes) ...",

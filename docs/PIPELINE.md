@@ -243,7 +243,7 @@ Each step implements the following error handling patterns:
 
 ## Running the Full Pipeline
 
-There are two options for running the full pipeline: Kestra-based orchestration or local sequential execution.
+There are four options for running the pipeline, depending on the use case:
 
 ### Option A: Local Sequential (recommended for peer reviewers)
 
@@ -286,7 +286,42 @@ make pipeline
 
 The Kestra DAG (`kestra/flows/dvf_pipeline.yml`) contains 8 tasks with parallel execution for independent steps (export + GeoJSON download) and retry logic on download and restore tasks. The flow accepts a `mode` parameter (`demo` or `full`).
 
-### Option C: Step-by-step (manual control)
+### Option C: Chunked Full-France Ingestion
+
+For processing the national DVF+ dump (all 101 departments) on machines with limited RAM or disk:
+
+```bash
+# 1. Provision infrastructure (one-time)
+make setup
+make terraform-apply
+
+# 2. Download and extract all regional .7z files into data/
+#    (11 files from Cerema Box, totaling ~4-5 GB)
+mkdir -p data
+cp ~/Downloads/DVFPlus_*.7z* data/
+
+# 3. Start PostgreSQL
+make docker-up
+
+# 4. Run chunked ingestion (processes departments in batches)
+make ingest-chunked
+
+# 5. Download GeoJSON boundaries
+make ingest-geojson
+
+# 6. Stop PostgreSQL
+make docker-down
+
+# 7. Load all chunks into BigQuery (auto-detects chunked layout)
+make bq-load
+
+# 8. Run dbt transformations
+make dbt-build
+```
+
+The chunked ingestion processes `DVF_CHUNK_SIZE` departments per batch (default: 10). Each batch restores into PostgreSQL, exports to CSV, uploads to per-table GCS subdirectories (`raw/dvf/{table}/chunk_NNN.csv`), then deletes local files. Progress is saved to `data/chunked_progress.json` -- if the process crashes, re-running `make ingest-chunked` resumes from the last completed chunk.
+
+### Option D: Step-by-step (manual control)
 
 For debugging or running individual steps:
 

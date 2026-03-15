@@ -283,12 +283,6 @@ To verify dashboard data matches BigQuery:
 make dashboard-validate
 ```
 
-To validate that the dashboard tiles return correct data:
-
-```bash
-make dashboard-validate
-```
-
 ## Environment Variables
 
 All configuration is managed through `.env` (see [.env.example](.env.example) for the template):
@@ -308,8 +302,12 @@ All configuration is managed through `.env` (see [.env.example](.env.example) fo
 | `POSTGRES_HOST` | Ephemeral PostgreSQL host | `localhost` |
 | `POSTGRES_PORT` | Ephemeral PostgreSQL port | `5432` |
 | `DVF_MODE` | Pipeline mode: `demo` or `full` | `demo` |
-| `DVF_DEMO_DEPARTMENTS` | Departments for demo mode | `75,13` |
+| `DVF_CHUNK_SIZE` | Departments per chunk in full mode (`make ingest-chunked`) | `10` |
+| `DVF_DEMO_DEPARTMENTS` | Departments for demo mode | `974` |
 | `KESTRA_PORT` | Kestra web UI port | `8080` |
+| `KESTRA_DB_USER` | Kestra internal PostgreSQL user | `kestra` |
+| `KESTRA_DB_PASSWORD` | Kestra internal PostgreSQL password | `kestra_local_only` |
+| `KESTRA_DB_NAME` | Kestra internal PostgreSQL database | `kestra` |
 | `DBT_PROFILES_DIR` | Path to dbt profiles directory | `./dbt_dvf` |
 
 ## Project Structure
@@ -317,7 +315,7 @@ All configuration is managed through `.env` (see [.env.example](.env.example) fo
 ```
 valeurs-foncieres-analytics/
 ├── Makefile                     # Build targets: setup, terraform-*, docker-*, ingest-*, dbt-*, clean
-├── .env.example                 # Environment variables template (16 variables)
+├── .env.example                 # Environment variables template (20 variables)
 ├── docker-compose.yml           # PostgreSQL (ephemeral) + Kestra v0.21.1 + Kestra PostgreSQL
 ├── requirements.txt             # Python dependencies (GCS, BigQuery, dbt, psycopg2, py7zr, etc.)
 │
@@ -328,17 +326,19 @@ valeurs-foncieres-analytics/
 │
 ├── docker/
 │   └── postgres/
-│       └── Dockerfile           # PostgreSQL 16 + PostGIS 3.4 (auto-enables PostGIS extension)
+│       ├── Dockerfile           # PostgreSQL 16 + PostGIS 3.4 (auto-enables PostGIS extension)
+│       └── postgresql.conf      # Tuned for bulk-load (WAL, shared_buffers, work_mem)
 │
-├── ingestion/                   # Python ingestion package (Parts 2-4)
+├── ingestion/                   # Python ingestion package (Parts 2-4, 9)
 │   ├── __init__.py              # Package marker
 │   ├── config.py                # Shared configuration (loads .env, typed constants, connections)
 │   ├── download_dvf.py          # Download DVF+ SQL dump from Cerema (auto or manual .7z/.sql)
 │   ├── restore_dump.py          # Execute SQL files via psql, verify tables, demo filtering
 │   ├── export_tables.py         # COPY tables to CSV (geometry->lat/lon, array->scalar handling)
 │   ├── download_geojson.py      # Download admin boundary GeoJSON from Etalab (dept + communes)
-│   ├── upload_to_gcs.py         # Upload CSV + GeoJSON to GCS (raw/dvf/ and raw/geojson/)
-│   └── load_to_bigquery.py      # Load CSV + GeoJSON from GCS into BigQuery raw tables
+│   ├── upload_to_gcs.py         # Upload CSV + GeoJSON to GCS (+ per-chunk upload for full mode)
+│   ├── load_to_bigquery.py      # Load from GCS into BigQuery (flat or wildcard for chunked)
+│   └── chunked_ingest.py        # Chunked full-France ingestion with crash-safe resume
 │
 ├── dbt_dvf/                     # dbt project (Part 5)
 │   ├── dbt_project.yml          # Project config: staging/intermediate as views, marts as tables
@@ -437,6 +437,7 @@ make ingest-restore     # Restore DVF+ SQL dump into PostgreSQL container
 make ingest-export      # Export PostgreSQL tables to CSV
 make ingest-geojson     # Download GeoJSON admin boundaries from Etalab
 make ingest-upload      # Upload CSV + GeoJSON to GCS
+make ingest-chunked     # Run chunked full-France ingestion (resumable, crash-safe)
 make bq-load            # Load CSV + GeoJSON from GCS into BigQuery raw tables
 make dbt-deps           # Install dbt packages (dbt_utils)
 make dbt-run            # Run all dbt models (staging + intermediate + marts)
@@ -450,6 +451,64 @@ make kestra-deploy      # Deploy flow YAML to Kestra via API
 make test               # Run all Python tests (uv run python -m pytest tests/ -v)
 make clean              # Tear down everything (containers + GCP resources)
 ```
+
+## Full-France Chunked Ingestion
+
+For ingesting all of France (~20M transactions across 101 departments), the standard `make run` pipeline loads everything in one pass. For machines with limited RAM or when processing the national dump (11 regional `.7z` files), a chunked ingestion mode is available:
+
+```bash
+make ingest-chunked
+```
+
+This processes department SQL files in configurable batches (default: 10 departments per chunk). Each chunk cycle:
+1. Resets PostgreSQL data tables (preserving annexe reference data)
+2. Restores the chunk's department SQL files
+3. Exports tables to CSV
+4. Uploads the chunk's CSV files to per-table GCS subdirectories (e.g., `raw/dvf/mutation/chunk_001.csv`)
+5. Deletes local chunk files to free disk space
+6. Saves progress to `data/chunked_progress.json` for crash-safe resume
+
+The BigQuery loader (`make bq-load`) automatically detects both flat layout (`raw/dvf/mutation.csv`) and chunked layout (`raw/dvf/mutation/chunk_*.csv`) and uses wildcard URIs for multi-file tables.
+
+Configure the chunk size via `DVF_CHUNK_SIZE` in `.env` (lower = less RAM but slower, higher = faster but more RAM).
+
+## Troubleshooting
+
+**Docker is not running**
+```
+Cannot connect to the Docker daemon
+```
+Start Docker Desktop (macOS/Windows) or the Docker service (Linux: `sudo systemctl start docker`). Verify with `docker info`.
+
+**`uv` is not installed**
+```
+command not found: uv
+```
+Install uv: `curl -LsSf https://astral.sh/uv/install.sh | sh`, then restart your terminal.
+
+**`make setup` fails on `terraform init`**
+```
+Terraform not found
+```
+Install Terraform from [developer.hashicorp.com/terraform/install](https://developer.hashicorp.com/terraform/install). Verify with `terraform --version`.
+
+**`make run` fails with "No DVF+ data found"**
+The DVF+ data must be downloaded manually (see Quick Start step 4). Place the `.7z` file in the `data/` directory.
+
+**PostgreSQL container fails to start (port conflict)**
+```
+Bind for 127.0.0.1:5432 failed: port is already allocated
+```
+Stop any existing PostgreSQL service: `sudo systemctl stop postgresql` (Linux) or change `POSTGRES_PORT` in `.env` to another port (e.g., `5433`).
+
+**BigQuery permission errors**
+Verify your service account has the required roles: `Storage Object Admin`, `BigQuery Data Editor`, `BigQuery Job User`. Re-check the key path in `.env` matches your actual file.
+
+**dbt fails with "dataset not found"**
+Run `make terraform-apply` first to create the BigQuery datasets. Verify `GCP_PROJECT_ID` in `.env` matches your actual GCP project.
+
+**Empty tables after pipeline run**
+If `DVF_DEMO_DEPARTMENTS` in `.env` does not match the region you downloaded, the demo filter will exclude all data. Ensure the department codes match (e.g., `974` for La Reunion, `75` for Paris from the Ile-de-France download).
 
 ## Acknowledgments
 

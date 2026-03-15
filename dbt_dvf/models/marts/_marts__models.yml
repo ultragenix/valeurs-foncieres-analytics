@@ -1,3 +1,20 @@
+# ------------------------------------------------------------------
+# _marts__models.yml — Schema declarations and tests for mart models.
+#
+# Mart models are the analytics-ready tables consumed by Looker Studio.
+# They are materialized as TABLEs in the dvf_analytics BigQuery dataset.
+#
+# The star schema consists of:
+#   - fct_transactions    (fact table, one row per sale deed)
+#   - dim_communes        (municipality lookup)
+#   - dim_property_types  (property type hierarchy)
+#   - dim_dates           (calendar lookup)
+#   - dim_geography       (department + commune geometries for maps)
+#
+# Relationship tests on foreign keys validate referential integrity
+# between fact and dimension tables.
+# ------------------------------------------------------------------
+
 version: 2
 
 models:
@@ -6,171 +23,179 @@ models:
       Fact table for real estate transactions. One row per mutation.
       Partitioned by transaction_year (integer range 2014-2025),
       clustered by department_code and property_type_code.
-      Written to dvf_analytics dataset.
+      Written to the dvf_analytics dataset. This is the primary table
+      queried by the Looker Studio dashboard.
     columns:
       - name: transaction_id
-        description: Business key (from idopendata)
+        description: Business key from the open-data identifier (idopendata), stable across DVF+ releases
         tests:
           - unique
           - not_null
       - name: mutation_id
-        description: Technical key (from idmutation)
+        description: Technical key from Cerema auto-generated ID (idmutation)
         tests:
           - unique
           - not_null
       - name: transaction_date
-        description: Transaction date
+        description: Transaction date (DATE type, parsed from raw string)
       - name: transaction_year
-        description: Transaction year (partition key)
+        description: Transaction year, used as the integer range partition key (2014-2025)
         tests:
           - not_null
       - name: transaction_month
         description: Transaction month (1-12)
       - name: department_code
-        description: Department code (cluster key 1)
+        description: Department code, first cluster key (e.g. '75', '2A', '971')
         tests:
           - not_null
           - relationships:
               to: ref('dim_geography')
               field: geo_code
       - name: commune_code
-        description: INSEE commune code
+        description: INSEE commune code (5-character string, resolved from parcelle or mutation)
         tests:
           - relationships:
               to: ref('dim_communes')
               field: commune_code
       - name: property_type_code
-        description: GnDVF property type code (cluster key 2)
+        description: GnDVF hierarchical property type code, second cluster key
         tests:
           - relationships:
               to: ref('dim_property_types')
               field: property_type_code
       - name: property_type_label
-        description: Property type label
+        description: Human-readable property type label (denormalized for query convenience)
       - name: transaction_price_eur
-        description: Transaction price in EUR (always > 0)
+        description: Transaction price in EUR, always strictly positive (non-market transactions excluded)
         tests:
           - not_null
           - dbt_utils.expression_is_true:
               expression: "> 0"
       - name: built_area_sqm
-        description: Total built area in square meters
+        description: Total built area in square meters (sum across all locals in the mutation)
       - name: land_area_sqm
-        description: Total land area in square meters
+        description: Total land area in square meters (from mutation table)
       - name: price_per_sqm
-        description: Computed price per square meter of built area
+        description: >
+          Derived metric: transaction_price_eur / built_area_sqm.
+          NULL when built_area_sqm is 0 or NULL (land-only transactions).
       - name: premises_count
-        description: Number of premises in the transaction
+        description: Total number of premises (building units) in the transaction
       - name: room_count
-        description: Max room count from local data
+        description: Maximum room count across all locals in the transaction (0 if no locals)
       - name: latitude
-        description: Latitude of the transaction location
+        description: Latitude of the transaction location (WGS84, from PostGIS centroid)
       - name: longitude
-        description: Longitude of the transaction location
+        description: Longitude of the transaction location (WGS84, from PostGIS centroid)
 
   - name: dim_communes
     description: >
       Dimension table for communes (municipalities).
-      Deduplicated from parcelle data joined with GeoJSON commune names.
-      Written to dvf_analytics dataset.
+      Deduplicated from parcelle data, enriched with official names from
+      Etalab GeoJSON. Written to the dvf_analytics dataset.
+      Only communes that appear in the transaction data are included.
     columns:
       - name: commune_code
-        description: Primary key (INSEE commune code)
+        description: Primary key, INSEE commune code (5-character string, e.g. '75056')
         tests:
           - unique
           - not_null
       - name: commune_name
-        description: Commune name (from GeoJSON or fallback to code)
+        description: Official commune name from GeoJSON, falling back to the code if no match
         tests:
           - not_null
       - name: department_code
-        description: Department code
+        description: Department code, determined by the most frequent association in parcelle data
         tests:
           - not_null
 
   - name: dim_property_types
     description: >
-      Dimension table for property types.
-      Deduplicated from mutation codtypbien + libtypbien.
-      Written to dvf_analytics dataset.
+      Dimension table for property types (GnDVF classification).
+      Deduplicated from the codtypbien + libtypbien pairs in the mutation table.
+      Includes a derived level-1 grouping (built property vs. unbuilt land).
+      Written to the dvf_analytics dataset.
     columns:
       - name: property_type_code
-        description: Primary key (GnDVF property type code)
+        description: Primary key, GnDVF hierarchical code (e.g. '111' = apartment, '211' = bare land)
         tests:
           - unique
           - not_null
       - name: property_type_label
-        description: Property type label
+        description: Human-readable property type label
       - name: property_type_level1
-        description: First character of code (1=built, 2=unbuilt)
+        description: First character of the code, indicating the broad category (1=built, 2=unbuilt)
         tests:
           - accepted_values:
               values: ['1', '2']
       - name: property_type_level1_label
-        description: Human-readable level 1 label
+        description: Human-readable label for the level-1 category ('Built property' or 'Unbuilt land')
 
   - name: dim_dates
     description: >
-      Date dimension generated using dbt_utils.date_spine.
-      Covers 2014-01-01 to 2025-12-31.
-      Written to dvf_analytics dataset.
+      Date dimension generated using dbt_utils.date_spine macro.
+      Covers every calendar day from 2014-01-01 to 2025-12-31.
+      Provides calendar attributes for time-series analysis in the dashboard.
+      Written to the dvf_analytics dataset.
     columns:
       - name: date_key
-        description: Primary key (date)
+        description: Primary key (DATE value, same as full_date)
         tests:
           - unique
           - not_null
       - name: full_date
-        description: Full date value
+        description: Full date value (DATE type)
         tests:
           - not_null
       - name: year
-        description: Year (2014-2025)
+        description: Calendar year (integer, 2014-2025)
         tests:
           - not_null
       - name: quarter
-        description: Quarter (1-4)
+        description: Calendar quarter (integer, 1-4)
         tests:
           - not_null
       - name: month
-        description: Month (1-12)
+        description: Calendar month (integer, 1-12)
         tests:
           - not_null
       - name: month_name
-        description: Month name (January-December)
+        description: Full English month name (e.g. 'January', 'February')
         tests:
           - not_null
       - name: day_of_week
-        description: Day of week (1=Sunday, 7=Saturday in BigQuery)
+        description: Day of week using BigQuery convention (1=Sunday, 2=Monday, ..., 7=Saturday)
         tests:
           - not_null
       - name: is_weekend
-        description: True if Saturday or Sunday
+        description: TRUE for Saturday (day_of_week=7) and Sunday (day_of_week=1)
 
   - name: dim_geography
     description: >
-      Geography dimension combining departments and communes.
-      Contains geometry for map visualizations.
-      Written to dvf_analytics dataset.
+      Geography dimension combining departments and communes into a single
+      table with a geo_level discriminator. Contains polygon geometries
+      for map visualizations in Looker Studio. Written to dvf_analytics dataset.
     columns:
       - name: geo_code
-        description: Primary key (department code or commune INSEE code)
+        description: Primary key (department code for departments, INSEE commune code for communes)
         tests:
           - unique
           - not_null
       - name: geo_name
-        description: Geographic entity name
+        description: Geographic entity name (official French name)
         tests:
           - not_null
       - name: geo_level
-        description: Entity level (department or commune)
+        description: Discriminator indicating the geographic level ('department' or 'commune')
         tests:
           - not_null
           - accepted_values:
               values: ['department', 'commune']
       - name: department_code
-        description: Department code (same as geo_code for departments)
+        description: >
+          Parent department code. For department-level rows, this equals geo_code.
+          For commune-level rows, derived from the first 2-3 characters of the INSEE code.
         tests:
           - not_null
       - name: geometry
-        description: BigQuery GEOGRAPHY type for map visualizations
+        description: BigQuery GEOGRAPHY polygon for map rendering (from Etalab GeoJSON boundaries)

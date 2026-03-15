@@ -1,13 +1,30 @@
-google-cloud-storage>=2.14.0
-google-cloud-bigquery>=3.17.0
-google-cloud-bigquery-storage>=2.24.0
-psycopg2-binary>=2.9.9
-requests>=2.31.0
-python-dotenv>=1.0.0
-tqdm>=4.66.0
-py7zr>=0.20.0
-dbt-core>=1.7.0
-dbt-bigquery>=1.7.0
-pyarrow>=15.0.0
-ruff>=0.3.0
-pytest>=8.0.0
+# =============================================================================
+# DVF+ Analytics — Python Dependencies
+# =============================================================================
+# Install with: uv pip install -r requirements.txt
+# =============================================================================
+
+# -- Google Cloud SDK clients (GCS uploads + BigQuery load jobs) ---------------
+google-cloud-storage>=2.14.0           # Upload CSV/GeoJSON to GCS bucket
+google-cloud-bigquery>=3.17.0          # Create tables, run load jobs, query BQ
+google-cloud-bigquery-storage>=2.24.0  # Fast reads via BigQuery Storage API (used by dbt)
+
+# -- Database (ephemeral PostgreSQL interaction) -------------------------------
+psycopg2-binary>=2.9.9                # PostgreSQL adapter for pg_restore + COPY export
+
+# -- Ingestion utilities -------------------------------------------------------
+requests>=2.31.0                       # HTTP downloads (DVF+ dump, GeoJSON boundaries)
+python-dotenv>=1.0.0                   # Load .env variables into os.environ
+tqdm>=4.66.0                           # Progress bars for long downloads and exports
+py7zr>=0.20.0                          # Extract .7z archives (DVF+ dump format)
+
+# -- dbt (data transformations in BigQuery) ------------------------------------
+dbt-core>=1.7.0                        # dbt CLI framework (run, test, deps)
+dbt-bigquery>=1.7.0                    # BigQuery adapter for dbt
+
+# -- Data format support -------------------------------------------------------
+pyarrow>=15.0.0                        # Columnar format support (used by BigQuery client)
+
+# -- Development tools ---------------------------------------------------------
+ruff>=0.3.0                            # Python linter and formatter
+pytest>=8.0.0                          # Test runner

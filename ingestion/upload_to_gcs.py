@@ -6,6 +6,16 @@ boundary files to ``raw/geojson/`` in the configured GCS bucket.
 For chunked full-France ingestion, ``upload_chunk_to_gcs()`` uploads a
 chunk's CSV files to per-table GCS subdirectories
 (e.g., ``raw/dvf/mutation/chunk_001.csv``).
+
+Inputs:
+    - CSV files in ``data/export/`` (from ``export_tables``).
+    - GeoJSON files in ``data/geojson/`` (from ``download_geojson``).
+Outputs:
+    - Objects in GCS bucket under ``raw/dvf/`` and ``raw/geojson/``.
+
+Dependencies:
+    google-cloud-storage -- via ``get_gcs_client()``.
+    tqdm -- for upload progress bar.
 """
 
 from __future__ import annotations
@@ -71,7 +81,13 @@ def _collect_files() -> tuple[list[Path], list[Path]]:
 # Upload
 # ---------------------------------------------------------------------------
 def _upload_file(bucket: Any, local_path: Path, gcs_path: str) -> None:
-    """Upload a single file to GCS and log its size."""
+    """Upload a single file to GCS and log its size.
+
+    Args:
+        bucket: GCS ``Bucket`` object.
+        local_path: Path to the local file to upload.
+        gcs_path: Destination path within the bucket.
+    """
     blob = bucket.blob(gcs_path)
     blob.upload_from_filename(str(local_path))
     size_mb = local_path.stat().st_size / BYTES_PER_MB
@@ -90,7 +106,17 @@ def _upload_file_list(
     prefix: str,
     progress: tqdm,
 ) -> int:
-    """Upload a list of files to *prefix* in the bucket. Returns count."""
+    """Upload a list of files to *prefix* in the bucket.
+
+    Args:
+        bucket: GCS ``Bucket`` object.
+        files: Local file paths to upload.
+        prefix: GCS path prefix (e.g. ``raw/dvf``).
+        progress: Shared ``tqdm`` progress bar to update.
+
+    Returns:
+        Number of files successfully uploaded.
+    """
     uploaded = 0
     for local_path in files:
         gcs_path = f"{prefix}/{local_path.name}"
@@ -105,7 +131,11 @@ def _upload_file_list(
 # Validation
 # ---------------------------------------------------------------------------
 def _validate_bucket_name() -> bool:
-    """Check that GCS_BUCKET_NAME is configured. Return True if valid."""
+    """Check that ``GCS_BUCKET_NAME`` is configured.
+
+    Returns:
+        True if the bucket name is non-empty, False otherwise.
+    """
     if not GCS_BUCKET_NAME:
         logger.error(
             "GCS_BUCKET_NAME is not configured. "
@@ -148,7 +178,17 @@ def _upload_all(
     geojson_files: list[Path],
     total_files: int,
 ) -> int:
-    """Upload CSV and GeoJSON files with a unified progress bar."""
+    """Upload CSV and GeoJSON files with a unified progress bar.
+
+    Args:
+        bucket: GCS ``Bucket`` object.
+        csv_files: CSV file paths to upload.
+        geojson_files: GeoJSON file paths to upload.
+        total_files: Total file count for the progress bar.
+
+    Returns:
+        Total number of files uploaded.
+    """
     progress = tqdm(total=total_files, desc="Uploading to GCS", unit="file")
     uploaded = 0
 
@@ -165,7 +205,15 @@ def _upload_all(
 # Per-chunk upload (full-France chunked ingestion)
 # ---------------------------------------------------------------------------
 def _chunk_gcs_path(table_name: str, chunk_index: int) -> str:
-    """Build the GCS path for a chunk's CSV file within a table subdir."""
+    """Build the GCS path for a chunk's CSV file within a table subdir.
+
+    Args:
+        table_name: Name of the DVF table (e.g. ``mutation``).
+        chunk_index: Zero-based chunk index (displayed as 1-based).
+
+    Returns:
+        GCS path like ``raw/dvf/mutation/chunk_001.csv``.
+    """
     return f"{GCS_DVF_PREFIX}/{table_name}/chunk_{chunk_index + 1:03d}.csv"
 
 
@@ -195,7 +243,17 @@ def upload_chunk_to_gcs(chunk_dir: Path, chunk_index: int) -> int:
 
 
 def _is_header_only(csv_file: Path) -> bool:
-    """Return True if a CSV file contains only a header (no data rows)."""
+    """Return True if a CSV file contains only a header (no data rows).
+
+    Uses ``MIN_CSV_DATA_SIZE`` as the threshold -- files smaller than
+    this are considered header-only and skipped during upload.
+
+    Args:
+        csv_file: Path to the CSV file.
+
+    Returns:
+        True if the file size is below ``MIN_CSV_DATA_SIZE``.
+    """
     return csv_file.stat().st_size < MIN_CSV_DATA_SIZE
 
 
@@ -204,7 +262,18 @@ def _upload_chunk_files(
     csv_files: list[Path],
     chunk_index: int,
 ) -> int:
-    """Upload each CSV file to its per-table GCS subdirectory."""
+    """Upload each CSV file to its per-table GCS subdirectory.
+
+    Skips header-only CSV files to avoid uploading empty tables.
+
+    Args:
+        bucket: GCS ``Bucket`` object.
+        csv_files: Local CSV file paths for this chunk.
+        chunk_index: Zero-based chunk index.
+
+    Returns:
+        Number of files uploaded (excluding skipped header-only files).
+    """
     uploaded = 0
     for csv_file in csv_files:
         if _is_header_only(csv_file):

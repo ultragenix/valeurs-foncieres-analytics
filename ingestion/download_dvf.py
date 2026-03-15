@@ -2,9 +2,20 @@
 
 Supports two modes:
   - Automatic: tries known download URLs (data.gouv.fr redirect, Cerema Box).
-  - Manual: user provides a pre-downloaded file via --file argument.
+  - Manual: user provides a pre-downloaded file via ``--file`` argument.
 
-The downloaded .7z archive is extracted to produce .sql files in data/.
+The downloaded ``.7z`` archive is extracted to produce ``.sql`` files in
+the ``data/`` directory. Handles nested archives (multi-part ``.7z.001``
+containing an inner ``.7z``) and SQL files in subdirectories.
+
+Inputs:
+    - URL from data.gouv.fr / Cerema Box, or a local ``.7z``/``.sql`` file.
+Outputs:
+    - One or more ``.sql`` files in ``data/``.
+
+Dependencies:
+    py7zr  -- for extracting 7-Zip archives.
+    ingestion.http_utils -- for streaming HTTP downloads.
 """
 
 import argparse
@@ -46,14 +57,30 @@ DVF_READ_TIMEOUT: int = 120
 # Download helpers
 # ---------------------------------------------------------------------------
 def _find_existing_sql_files(directory: Path) -> list[Path]:
-    """Return all .sql files in the given directory."""
+    """Return all ``.sql`` files in the given directory, sorted by name.
+
+    Args:
+        directory: The directory to search (non-recursive).
+
+    Returns:
+        Sorted list of ``.sql`` file paths, or empty list if the
+        directory does not exist.
+    """
     if not directory.exists():
         return []
     return sorted(directory.glob("*.sql"))
 
 
 def _find_existing_archives(directory: Path) -> list[Path]:
-    """Return all .7z or .7z.001 (multi-part) archives in the given directory."""
+    """Return all ``.7z`` or ``.7z.001`` (multi-part) archives in *directory*.
+
+    Args:
+        directory: The directory to search (non-recursive).
+
+    Returns:
+        Sorted list of archive paths, or empty list if the directory
+        does not exist.
+    """
     if not directory.exists():
         return []
     archives = set(directory.glob(f"*{ARCHIVE_SUFFIX}"))
@@ -64,7 +91,14 @@ def _find_existing_archives(directory: Path) -> list[Path]:
 def _download_with_progress(url: str, destination: Path) -> bool:
     """Stream-download a URL to *destination* with a tqdm progress bar.
 
-    Returns True on success, False on failure.
+    Delegates to ``stream_download`` with ``DVF_READ_TIMEOUT``.
+
+    Args:
+        url: The HTTP(S) URL to download.
+        destination: Local file path for the downloaded content.
+
+    Returns:
+        True on success, False on failure.
     """
     return stream_download(url, destination, read_timeout=DVF_READ_TIMEOUT)
 
@@ -72,7 +106,11 @@ def _download_with_progress(url: str, destination: Path) -> bool:
 def _validate_archive_members(names: list[str]) -> None:
     """Validate archive member filenames for path traversal attacks.
 
-    Raises ValueError if any member has an absolute path or contains '..'.
+    Args:
+        names: List of member filenames from the archive.
+
+    Raises:
+        ValueError: If any member has an absolute path or contains ``..``.
     """
     for name in names:
         if ".." in name or Path(name).is_absolute():
@@ -81,11 +119,18 @@ def _validate_archive_members(names: list[str]) -> None:
 
 
 def _extract_7z(archive_path: Path, target_dir: Path) -> list[Path]:
-    """Extract a .7z archive into *target_dir* and return .sql file paths.
+    """Extract a ``.7z`` archive into *target_dir* and return ``.sql`` file paths.
 
-    Handles nested archives (.7z.001 containing a .7z) and SQL files inside
-    subdirectories. Validates member filenames before extraction to prevent
-    path traversal. Requires the ``py7zr`` package.
+    Handles nested archives (``.7z.001`` containing a ``.7z``) and SQL files
+    inside subdirectories. Validates member filenames before extraction to
+    prevent path traversal. Requires the ``py7zr`` package.
+
+    Args:
+        archive_path: Path to the ``.7z`` archive file.
+        target_dir: Directory where contents will be extracted.
+
+    Returns:
+        List of extracted ``.sql`` file paths (moved to *target_dir* root).
     """
     try:
         import py7zr  # noqa: WPS433 -- lazy import, optional dep
@@ -111,7 +156,14 @@ def _extract_7z(archive_path: Path, target_dir: Path) -> list[Path]:
 
 
 def _collect_sql_files(directory: Path) -> list[Path]:
-    """Find .sql files recursively and move them to the top-level directory."""
+    """Find ``.sql`` files recursively and move them to the top-level directory.
+
+    Args:
+        directory: Root directory to search.
+
+    Returns:
+        List of ``.sql`` file paths now located directly in *directory*.
+    """
     sql_files: list[Path] = []
     for sql_file in sorted(directory.rglob("*.sql")):
         if sql_file.parent != directory:
@@ -126,7 +178,14 @@ def _collect_sql_files(directory: Path) -> list[Path]:
 
 
 def _extract_nested_archives(directory: Path) -> list[Path]:
-    """Extract any inner .7z archives found after first extraction."""
+    """Extract any inner ``.7z`` archives found after first extraction.
+
+    Args:
+        directory: Directory to search for nested ``.7z`` files.
+
+    Returns:
+        List of ``.sql`` file paths extracted from nested archives.
+    """
     inner_archives = sorted(directory.glob("*.7z"))
     sql_files: list[Path] = []
     for inner in inner_archives:
@@ -157,7 +216,14 @@ def _print_manual_instructions() -> None:
 
 
 def _return_existing_sql(data_dir: Path) -> list[Path] | None:
-    """Return existing SQL files if present, otherwise None."""
+    """Return existing SQL files if present, otherwise None.
+
+    Args:
+        data_dir: Directory to check for ``.sql`` files.
+
+    Returns:
+        List of paths if SQL files exist, ``None`` otherwise.
+    """
     existing_sql = _find_existing_sql_files(data_dir)
     if existing_sql:
         logger.info(
@@ -170,7 +236,15 @@ def _return_existing_sql(data_dir: Path) -> list[Path] | None:
 
 
 def _handle_manual_sql(manual_path: Path, data_dir: Path) -> list[Path]:
-    """Copy a manual .sql file into data_dir and return its path."""
+    """Copy a user-provided ``.sql`` file into *data_dir* and return its path.
+
+    Args:
+        manual_path: Resolved path to the user-provided SQL file.
+        data_dir: Target directory for the copy.
+
+    Returns:
+        Single-element list with the destination path.
+    """
     dest = data_dir / manual_path.name
     if dest != manual_path:
         shutil.copy2(manual_path, dest)
@@ -179,7 +253,15 @@ def _handle_manual_sql(manual_path: Path, data_dir: Path) -> list[Path]:
 
 
 def _handle_manual_7z(manual_path: Path, data_dir: Path) -> list[Path]:
-    """Copy a manual .7z archive into data_dir and extract it."""
+    """Copy a user-provided ``.7z`` archive into *data_dir* and extract it.
+
+    Args:
+        manual_path: Resolved path to the user-provided archive.
+        data_dir: Target directory for the copy and extraction.
+
+    Returns:
+        List of extracted ``.sql`` file paths.
+    """
     dest_archive = data_dir / manual_path.name
     if dest_archive != manual_path:
         shutil.copy2(manual_path, dest_archive)
@@ -189,9 +271,17 @@ def _handle_manual_7z(manual_path: Path, data_dir: Path) -> list[Path]:
 def _handle_manual_file(
     manual_file: Path, data_dir: Path
 ) -> list[Path]:
-    """Process a user-provided .sql or .7z file.
+    """Process a user-provided ``.sql`` or ``.7z`` file.
 
-    Exits with error if file does not exist or format is unsupported.
+    Args:
+        manual_file: Path to the user-provided file (resolved internally).
+        data_dir: Target directory for copying and extraction.
+
+    Returns:
+        List of resulting ``.sql`` file paths.
+
+    Raises:
+        SystemExit: If the file does not exist or its format is unsupported.
     """
     manual_path = Path(manual_file).resolve()
     if not manual_path.exists():
@@ -211,7 +301,15 @@ def _handle_manual_file(
 
 
 def _try_existing_archives(data_dir: Path) -> list[Path] | None:
-    """Try to extract already-downloaded archives. Return SQL files or None."""
+    """Try to extract already-downloaded archives in *data_dir*.
+
+    Args:
+        data_dir: Directory to search for existing ``.7z`` archives.
+
+    Returns:
+        List of extracted ``.sql`` file paths, or ``None`` if no archives
+        are found or extraction yields no SQL files.
+    """
     existing_archives = _find_existing_archives(data_dir)
     if not existing_archives:
         return None
@@ -224,7 +322,18 @@ def _try_existing_archives(data_dir: Path) -> list[Path] | None:
 
 
 def _try_automatic_download(data_dir: Path) -> list[Path] | None:
-    """Attempt automatic download from data.gouv.fr. Return SQL files or None."""
+    """Attempt automatic download from data.gouv.fr and extract the archive.
+
+    Downloads the DVF+ archive via ``DATA_GOUV_RESOURCE_URL``, which
+    redirects to the Cerema Box hosting.
+
+    Args:
+        data_dir: Directory where the archive is saved and extracted.
+
+    Returns:
+        List of extracted ``.sql`` file paths, or ``None`` if the
+        download or extraction fails.
+    """
     import py7zr  # noqa: WPS433 -- needed for specific exception handling
 
     logger.info("Attempting download from data.gouv.fr redirect ...")
@@ -257,7 +366,25 @@ def _fail_with_manual_instructions() -> None:
 
 
 def download_dvf(manual_file: Path | None = None) -> list[Path]:
-    """Download and extract the DVF+ SQL dump, returning .sql file paths."""
+    """Download and extract the DVF+ SQL dump, returning ``.sql`` file paths.
+
+    Resolution order:
+      1. Reuse existing ``.sql`` files in ``DATA_DIR``.
+      2. Use *manual_file* if provided.
+      3. Extract existing archives in ``DATA_DIR``.
+      4. Attempt automatic download from data.gouv.fr.
+      5. Print manual download instructions and exit.
+
+    Args:
+        manual_file: Optional path to a user-provided ``.sql`` or ``.7z``
+            file, bypassing automatic download.
+
+    Returns:
+        List of ``.sql`` file paths ready for ``restore_dump``.
+
+    Raises:
+        SystemExit: If no SQL files can be obtained by any method.
+    """
     DATA_DIR.mkdir(parents=True, exist_ok=True)
 
     existing = _return_existing_sql(DATA_DIR)
@@ -283,7 +410,11 @@ def download_dvf(manual_file: Path | None = None) -> list[Path]:
 # CLI entry point
 # ---------------------------------------------------------------------------
 def _parse_args() -> argparse.Namespace:
-    """Parse command-line arguments."""
+    """Parse command-line arguments.
+
+    Returns:
+        Namespace with optional ``file`` attribute (str or None).
+    """
     parser = argparse.ArgumentParser(
         description="Download DVF+ SQL dump from Cerema."
     )
