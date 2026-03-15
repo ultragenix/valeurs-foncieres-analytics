@@ -7,7 +7,7 @@ DBT_PROFILES_DIR := $(CURDIR)/dbt_dvf
        docker-up docker-down docker-up-kestra ingest-download ingest-restore \
        ingest-export ingest-geojson ingest-upload ingest-chunked bq-load \
        dbt-deps dbt-run dbt-test dbt-build \
-       dashboard-validate \
+       dashboard-validate check-data \
        run pipeline pipeline-local kestra-deploy test clean
 
 help: ## Show this help message
@@ -71,7 +71,24 @@ pipeline: ## Run pipeline via Kestra API (requires Kestra running)
 	@echo ""
 	@echo "Pipeline triggered. Monitor at http://localhost:$${KESTRA_PORT:-8080}"
 
-pipeline-local: ## Run full pipeline locally (sequential, no Kestra required)
+check-data: ## Verify DVF+ data is present before running pipeline
+	@if find data -name '*.sql' -print -quit 2>/dev/null | grep -q . || ls data/*.7z* 1>/dev/null 2>&1; then \
+		echo "DVF+ data found in data/."; \
+	else \
+		echo ""; \
+		echo "ERROR: No DVF+ data found in data/"; \
+		echo ""; \
+		echo "Download the DVF+ SQL dump manually (no account needed):"; \
+		echo "  1. Visit https://cerema.app.box.com/v/dvfplus-opendata"; \
+		echo "  2. Download La Reunion .7z (38 MB, recommended for review)"; \
+		echo "  3. Place it in the data/ directory:"; \
+		echo "     mkdir -p data && cp ~/Downloads/DVFPlus_*.7z* data/"; \
+		echo ""; \
+		echo "See README.md Step 4 for details."; \
+		exit 1; \
+	fi
+
+pipeline-local: check-data ## Run full pipeline locally (sequential, no Kestra required)
 	@echo "=== DVF Pipeline (local sequential mode) ==="
 	$(MAKE) ingest-download
 	$(MAKE) docker-up
