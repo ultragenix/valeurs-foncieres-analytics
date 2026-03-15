@@ -186,13 +186,17 @@ dbt-build: ## Full dbt workflow: deps + run + test
 # =============================================================================
 
 dashboard-validate: ## Validate dashboard data by running tile queries against BigQuery
-	@echo "=== Tile 1: Transaction Count by Property Type ==="
-	bq query --use_legacy_sql=false --project_id=$(shell grep GCP_PROJECT_ID .env | cut -d= -f2 | cut -d'#' -f1 | tr -d ' ') \
-		'SELECT property_type_label, COUNT(*) AS cnt FROM dvf_analytics.fct_transactions GROUP BY 1 ORDER BY cnt DESC LIMIT 10'
-	@echo ""
-	@echo "=== Tile 2: Transaction Volume by Year ==="
-	bq query --use_legacy_sql=false --project_id=$(shell grep GCP_PROJECT_ID .env | cut -d= -f2 | cut -d'#' -f1 | tr -d ' ') \
-		'SELECT transaction_year, COUNT(*) AS cnt, ROUND(AVG(transaction_price_eur), 0) AS avg_price FROM dvf_analytics.fct_transactions GROUP BY 1 ORDER BY 1'
+	@uv run python -c "\
+	from google.cloud import bigquery; import os; from dotenv import load_dotenv; load_dotenv(); \
+	c = bigquery.Client(project=os.getenv('GCP_PROJECT_ID')); \
+	print('=== Tile 1: Transaction Count by Property Type ==='); \
+	[print(f'  {r.property_type_label:40s} {r.cnt:>10,}') for r in c.query('SELECT property_type_label, COUNT(*) AS cnt FROM dvf_analytics.fct_transactions GROUP BY 1 ORDER BY cnt DESC LIMIT 10')]; \
+	print(); \
+	print('=== Tile 2: Transaction Volume by Year ==='); \
+	[print(f'  {r.transaction_year}  {r.cnt:>10,} transactions  avg {r.avg_price:>12,.0f} EUR') for r in c.query('SELECT transaction_year, COUNT(*) AS cnt, ROUND(AVG(transaction_price_eur)) AS avg_price FROM dvf_analytics.fct_transactions GROUP BY 1 ORDER BY 1')]; \
+	print(); \
+	t = c.get_table('dvf_analytics.fct_transactions'); \
+	print(f'Total: {t.num_rows:,} transactions in fct_transactions')"
 
 test: ## Run all tests
 	uv run python -m pytest tests/ -v
