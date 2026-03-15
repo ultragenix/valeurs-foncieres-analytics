@@ -299,16 +299,51 @@ This single command runs the entire pipeline: extracts the `.7z` archive, restor
 | `demo` (default) | Loads configured departments only | ~5-15 min |
 | `full` | Loads all of France (~20M transactions) | ~1-2 hours |
 
-### 6. View the dashboard
+### 6. Verify the results
+
+After `make run` completes, verify that everything worked:
+
+```bash
+# Check that BigQuery tables have data
+make dashboard-validate
+```
+
+Expected output (La Reunion demo):
+```
+=== Tile 1: Transaction Count by Property Type ===
++--------------------------------------+-------+
+|          property_type_label         |  cnt  |
++--------------------------------------+-------+
+| UNE MAISON                           | 35809 |
+| UN APPARTEMENT                       | 18498 |
+| TERRAIN DE TYPE TAB                  |  5693 |
+| ...                                  |  ...  |
++--------------------------------------+-------+
+
+=== Tile 2: Transaction Volume by Year ===
++------------------+-------+-----------+
+| transaction_year |  cnt  | avg_price |
++------------------+-------+-----------+
+|             2014 |  5798 |    143878 |
+|             2015 |  6272 |    143718 |
+| ...              |  ...  |       ... |
++------------------+-------+-----------+
+```
+
+If you see data in both tiles, the pipeline ran successfully.
+
+### 7. View the dashboard
 
 **[Open the dashboard](https://lookerstudio.google.com/reporting/b0b00d24-9d2f-4164-86f2-79e72340f4ac)** (Looker Studio — no install needed)
 
 The dashboard has 4 tiles across 2 pages with 3 interactive filters (year, property type, department). It connects directly to BigQuery. Reviewers can view it without running the pipeline.
 
-To verify dashboard data matches BigQuery:
+### 8. Clean up (optional)
+
+When you are done reviewing, tear down all resources to avoid charges:
 
 ```bash
-make dashboard-validate
+make clean                    # stops Docker containers + destroys GCP resources (bucket, datasets, service account)
 ```
 
 ## Environment Variables
