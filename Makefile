@@ -70,7 +70,7 @@ terraform-destroy: ## Destroy all Terraform-managed GCP resources
 # =============================================================================
 
 docker-up: ## Start ephemeral PostgreSQL container
-	docker compose up -d postgres
+	docker compose up -d --build postgres
 
 docker-down: ## Stop and remove all containers
 	docker compose down
@@ -159,9 +159,9 @@ pipeline-local: check-data ## Run full pipeline locally (sequential, no Kestra r
 
 kestra-deploy: ## Deploy flow YAML to Kestra via API
 	@echo "Deploying DVF pipeline flow to Kestra..."
-	curl -s -X PUT http://localhost:$${KESTRA_PORT:-8080}/api/v1/flows \
+	curl -s -X POST http://localhost:$${KESTRA_PORT:-8080}/api/v1/flows \
 		-H "Content-Type: application/x-yaml" \
-		-d @kestra/flows/dvf_pipeline.yml
+		--data-binary @kestra/flows/dvf_pipeline.yml
 	@echo ""
 	@echo "Flow deployed. View at http://localhost:$${KESTRA_PORT:-8080}"
 

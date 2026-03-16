@@ -24,6 +24,12 @@ RUN apt-get update \
        postgresql-16-postgis-3 \
     && rm -rf /var/lib/apt/lists/*
 
+# Bake the bulk-load-optimized postgresql.conf into the image.
+# This avoids bind mounts, which fail when Kestra manages this container
+# via Docker-from-Docker (the Docker daemon resolves paths from the host,
+# not from inside the Kestra container).
+COPY postgresql.conf /etc/postgresql/postgresql.conf
+
 # Auto-enable PostGIS when the database is created.
 # The official postgres image runs all .sql files in /docker-entrypoint-initdb.d/
 # on first startup (when the data directory is empty). The "01_" prefix ensures

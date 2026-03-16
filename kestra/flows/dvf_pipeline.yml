@@ -4,8 +4,9 @@
 # End-to-end orchestration for the DVF data pipeline. Tasks run sequentially
 # (top to bottom) unless wrapped in a Parallel block. The DAG is:
 #
-#   download -> start_postgres -> restore -> [export_tables || download_geojson]
-#            -> stop_postgres -> upload -> load_bigquery -> dbt_transform
+#   setup -> download -> start_postgres -> restore
+#         -> [export_tables || download_geojson]
+#         -> stop_postgres -> upload -> load_bigquery -> dbt_transform
 #
 # Deploy this flow to Kestra:  make kestra-deploy
 # Trigger a run:               make pipeline
@@ -38,11 +39,14 @@ inputs:
 # ---------------------------------------------------------------------------
 # Task defaults: environment variables injected into every shell task.
 # These are read from Kestra's server-level environment variables (envs.*),
-# which mirror the values in .env.
+# which mirror the values in .env via docker-compose.yml.
+# All tasks run from /app/project (the mounted project directory).
 # ---------------------------------------------------------------------------
 taskDefaults:
   - type: io.kestra.plugin.scripts.shell.Commands
     values:
+      beforeCommands:
+        - cd /app/project
       env:
         DVF_MODE: "{{ inputs.mode }}"
         GCP_PROJECT_ID: "{{ envs.GCP_PROJECT_ID }}"
@@ -64,6 +68,16 @@ taskDefaults:
 # Pipeline Tasks (sequential unless wrapped in Parallel)
 # =============================================================================
 tasks:
+  # --- Step 0: Install Python dependencies ----------------------------------
+  # The custom Kestra image has Python and uv, but project dependencies
+  # (psycopg2, google-cloud, dbt, etc.) must be installed from requirements.txt.
+  - id: setup
+    type: io.kestra.plugin.scripts.shell.Commands
+    description: Install Python dependencies in the container venv
+    commands:
+      - uv venv --python python3
+      - uv pip install -r requirements.txt
+
   # --- Step 1: Download the DVF+ SQL dump from Cerema Box -----------------
   # Network-dependent: retry 3 times with 30s delay on failure.
   - id: download
@@ -77,20 +91,18 @@ tasks:
       - uv run python -m ingestion.download_dvf
 
   # --- Step 2: Start the ephemeral PostgreSQL container --------------------
-  # Uses docker compose to start the PostGIS-enabled container defined in
-  # docker-compose.yml. Waits for it to accept connections before proceeding.
+  # Uses Docker-from-Docker (host socket mounted) to start the PostGIS
+  # container defined in docker-compose.yml. Waits for it to accept
+  # connections before proceeding.
   - id: start_postgres
     type: io.kestra.plugin.scripts.shell.Commands
     description: Start ephemeral PostgreSQL container and wait for healthy
     commands:
-      - docker compose up -d postgres
-      - sleep 5
-      - docker compose exec postgres pg_isready -U ${POSTGRES_USER:-dvf} -d ${POSTGRES_DB:-dvf}
+      - docker compose up -d postgres --wait
 
   # --- Step 3: Restore the SQL dump into PostgreSQL ------------------------
-  # Uses pg_restore to load the .sql.gz dump. In demo mode, only the
-  # departments listed in DVF_DEMO_DEPARTMENTS are restored.
-  # Network-independent, but may fail on corrupt dumps — retry logic added.
+  # Uses psql to load the .sql dump. In demo mode, only the departments
+  # listed in DVF_DEMO_DEPARTMENTS are restored.
   - id: restore
     type: io.kestra.plugin.scripts.shell.Commands
     description: Restore DVF+ SQL dump into PostgreSQL container
@@ -125,11 +137,12 @@ tasks:
   # --- Step 5: Stop PostgreSQL (cleanup) -----------------------------------
   # The database is no longer needed — CSV exports are on disk.
   # Stopping early frees memory for the remaining GCS/BigQuery steps.
+  # Uses stop + rm (not "down") to avoid killing Kestra itself.
   - id: stop_postgres
     type: io.kestra.plugin.scripts.shell.Commands
     description: Stop and remove ephemeral PostgreSQL container (cleanup)
     commands:
-      - docker compose down postgres
+      - docker compose rm -sf postgres
 
   # --- Step 6: Upload to GCS data lake -------------------------------------
   # Uploads all CSV and GeoJSON files from data/ to the GCS bucket.

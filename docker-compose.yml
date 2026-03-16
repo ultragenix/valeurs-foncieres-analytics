@@ -13,6 +13,8 @@
 #   docker compose down -v              # Stop all + delete persistent volumes
 # =============================================================================
 
+name: dvf-analytics
+
 services:
   # ---------------------------------------------------------------------------
   # DVF PostgreSQL -- ephemeral (no persistent volume)
@@ -30,9 +32,6 @@ services:
       POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-dvf_local_only}  # Local-only password (never exposed)
       POSTGRES_DB: ${POSTGRES_DB:-dvf}                         # Database name for DVF+ data
     shm_size: 2g                        # Increased shared memory for bulk COPY operations
-    volumes:
-      # Mount a custom postgresql.conf optimized for bulk loading (WAL disabled, fsync off)
-      - ./docker/postgres/postgresql.conf:/etc/postgresql/postgresql.conf:ro
     command: postgres -c config_file=/etc/postgresql/postgresql.conf
     ports:
       # Bind to localhost only — not exposed to the network
@@ -68,12 +67,26 @@ services:
   # API:    http://localhost:8080/api/v1/
   # Deploy flows via: make kestra-deploy
   # Trigger runs via: make pipeline
+  #
+  # Custom image: includes Python 3, uv, Docker CLI, psql so that pipeline
+  # tasks can run directly inside the Kestra container.
+  # The host Docker socket is mounted so Kestra can manage the postgres
+  # container (Docker-from-Docker pattern).
   # ---------------------------------------------------------------------------
   kestra:
-    image: kestra/kestra:v0.21.1        # Pinned version for reproducibility
+    build:
+      context: ./docker/kestra          # Custom image: Kestra + Python + Docker CLI
+      dockerfile: Dockerfile
     ports:
       # Web UI and REST API — bind to localhost only
       - "127.0.0.1:${KESTRA_PORT:-8080}:8080"
+    volumes:
+      # Mount the project directory so Kestra tasks can access scripts and data
+      - .:/app/project
+      # Mount Docker socket for Docker-from-Docker (manage postgres container)
+      - /var/run/docker.sock:/var/run/docker.sock
+      # Persist Python venv across container restarts (avoid re-installing deps)
+      - kestra_venv:/app/project/.venv
     environment:
       # Inline YAML configuration: point Kestra at its internal PostgreSQL
       KESTRA_CONFIGURATION: |
@@ -83,6 +96,35 @@ services:
             driverClassName: org.postgresql.Driver
             username: ${KESTRA_DB_USER:-kestra}
             password: ${KESTRA_DB_PASSWORD:-kestra_local_only}
+        kestra:
+          repository:
+            type: postgres
+          queue:
+            type: postgres
+          storage:
+            type: local
+            local:
+              base-path: /app/storage
+          variables:
+            env-vars-prefix: ""
+      # Pipeline environment variables (read by flow tasks via {{ envs.* }})
+      GCP_PROJECT_ID: ${GCP_PROJECT_ID}
+      GCP_REGION: ${GCP_REGION:-europe-west9}
+      GCS_BUCKET_NAME: ${GCS_BUCKET_NAME}
+      GOOGLE_APPLICATION_CREDENTIALS: /app/project/gcp-sa-key.json
+      BQ_DATASET_RAW: ${BQ_DATASET_RAW:-dvf_raw}
+      BQ_DATASET_STAGING: ${BQ_DATASET_STAGING:-dvf_staging}
+      BQ_DATASET_ANALYTICS: ${BQ_DATASET_ANALYTICS:-dvf_analytics}
+      POSTGRES_USER: ${POSTGRES_USER:-dvf}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-dvf_local_only}
+      POSTGRES_DB: ${POSTGRES_DB:-dvf}
+      # From inside Kestra, postgres is accessible via the compose service name
+      POSTGRES_HOST: postgres
+      POSTGRES_PORT: "5432"
+      DVF_MODE: ${DVF_MODE:-demo}
+      DVF_DEMO_DEPARTMENTS: ${DVF_DEMO_DEPARTMENTS:-974}
+      DBT_PROFILES_DIR: /app/project/dbt_dvf
+    working_dir: /app/project
     command: server standalone           # Single-node mode (no cluster)
     healthcheck:
       test: ["CMD-SHELL", "curl -f http://localhost:8080/api/v1/configs || exit 1"]
@@ -97,3 +139,4 @@ services:
 # Named volumes — persist across container restarts
 volumes:
   kestra_pg_data:                        # Kestra metadata (execution history, flow state)
+  kestra_venv:                           # Python venv for Kestra pipeline tasks
