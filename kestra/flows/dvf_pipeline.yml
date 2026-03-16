@@ -63,7 +63,7 @@ tasks:
     type: io.kestra.plugin.scripts.shell.Commands
     description: Install Python dependencies in the container venv
     commands:
-      - uv venv --python python3
+      - uv venv --python python3 || true
       - uv pip install -r requirements.txt
 
   # --- Step 1: Download the DVF+ SQL dump from Cerema Box -----------------
