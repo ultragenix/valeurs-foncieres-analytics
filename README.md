@@ -2,7 +2,7 @@
 
 End-to-end data pipeline for French real estate transaction analytics using the DVF+ dataset (20M+ transactions, 2014--2025).
 
-> **TL;DR:** End-to-end batch pipeline that transforms France's 20M+ real estate transactions (DVF+ open data, 2014–2025) into a Kimball star schema on BigQuery, exposed through an interactive Looker Studio dashboard. Stack: GCP · Terraform · Docker · PostgreSQL · Python · dbt · Kestra. Reproducible in ~15 min: `make setup && make terraform-apply && make run` (one manual download required). Targets 28/28 on Zoomcamp evaluation criteria.
+> **TL;DR:** End-to-end batch pipeline that transforms France's 20M+ real estate transactions (DVF+ open data, 2014–2025) into a Kimball star schema on BigQuery, exposed through an interactive Looker Studio dashboard. Stack: GCP · Terraform · Docker · PostgreSQL · Python · dbt · Kestra. Orchestrated via Kestra DAG (web UI on port 8080) or local fallback (`make run`). Reproducible in ~15 min (one manual download required). Targets 28/28 on Zoomcamp evaluation criteria.
 
 ## Problem Statement
 
@@ -149,7 +149,7 @@ communes.geojson   -->  raw/geojson/comm-1000m...  -->  geo_communes          --
                                                                     Looker Studio Dashboard
 ```
 
-Kestra orchestration wraps all steps into a single end-to-end DAG. Run via `make pipeline` (Kestra API) or `make run` (local sequential fallback).
+Kestra orchestrates all steps as a single end-to-end DAG with parallel export/geojson. Run via `make pipeline` (Kestra, recommended) or `make run` (local sequential fallback).
 
 ## BigQuery Optimization
 
@@ -288,11 +288,23 @@ DVF_MODE=full                    # All of France (requires National download)
 
 ### 5. Run the pipeline
 
+**Option A — Kestra orchestration (recommended):**
+
+```bash
+make docker-up-kestra         # Start Kestra + its internal PostgreSQL (~30s)
+make kestra-deploy            # Deploy the DVF pipeline flow
+make pipeline                 # Trigger the end-to-end DAG
+```
+
+Monitor progress at **http://localhost:8080** (Kestra web UI). The DAG runs 9 tasks with parallel export/geojson download. When done, stop Kestra with `make docker-down`.
+
+**Option B — Local sequential (no Kestra):**
+
 ```bash
 make run                      # downloads, restores, exports, uploads, transforms — all automatic
 ```
 
-This single command runs the entire pipeline: extracts the `.7z` archive, restores the SQL dump into an ephemeral PostgreSQL container, exports tables to CSV, downloads GeoJSON boundaries, uploads to GCS, loads into BigQuery, runs dbt transformations and 62 data tests, then shuts down PostgreSQL.
+Both options run the same pipeline: extract `.7z` archive, restore SQL dump into ephemeral PostgreSQL, export tables to CSV, download GeoJSON boundaries, upload to GCS, load into BigQuery, run dbt transformations and 62 data tests.
 
 | Mode | What it does | Duration |
 |------|-------------|----------|
@@ -388,6 +400,8 @@ valeurs-foncieres-analytics/
 │   └── outputs.tf               # Resource references (bucket URL, dataset IDs, SA email)
 │
 ├── docker/
+│   ├── kestra/
+│   │   └── Dockerfile           # Custom Kestra image (Python 3, uv, Docker CLI, psql)
 │   └── postgres/
 │       ├── Dockerfile           # PostgreSQL 16 + PostGIS 3.4 (auto-enables PostGIS extension)
 │       └── postgresql.conf      # Tuned for bulk-load (WAL, shared_buffers, work_mem)
@@ -446,11 +460,11 @@ This project targets the maximum score of **28/28** across all 7 evaluation crit
 |---|-----------|--------|----------------|--------|
 | 1 | **Problem description** | 4/4 | Clearly described in this README: raw DVF+ dump transformed into an analytics-ready star schema | Done |
 | 2 | **Cloud** | 4/4 | GCP infrastructure provisioned with Terraform (GCS + BigQuery + service account + IAM) | Done |
-| 3 | **Data ingestion** | 4/4 | End-to-end pipeline: download, restore, export, upload to GCS, load to BigQuery. Orchestrated via Kestra DAG or `make run` | Done |
+| 3 | **Data ingestion** | 4/4 | End-to-end pipeline orchestrated via Kestra DAG (`make pipeline`) with parallel tasks, web UI monitoring, and retry logic. Local fallback via `make run` | Done |
 | 4 | **Data warehouse** | 4/4 | BigQuery with integer range partitioning (year) + clustering (department, property type) at both raw and mart layers -- see [docs/PARTITIONING.md](docs/PARTITIONING.md) | Done |
 | 5 | **Transformations** | 4/4 | dbt-bigquery: 6 staging views, 1 intermediate join, 5 Kimball star schema mart tables, 62 data tests | Done |
 | 6 | **Dashboard** | 4/4 | Looker Studio with 2+ tiles: transaction count by property type, price evolution by year, price/m2 by department. See [docs/DASHBOARD.md](docs/DASHBOARD.md) | Done |
-| 7 | **Reproducibility** | 4/4 | Makefile + Docker + Terraform + `.env.example` + step-by-step README; `make setup && make terraform-apply && make run` (manual DVF+ download required -- see Quick Start step 4) | Done |
+| 7 | **Reproducibility** | 4/4 | Makefile + Docker + Terraform + `.env.example` + step-by-step README; `make setup && make terraform-apply && make docker-up-kestra && make kestra-deploy && make pipeline` (manual DVF+ download required -- see Quick Start step 4) | Done |
 
 ## Data Sources
 
@@ -507,10 +521,10 @@ make dbt-run            # Run all dbt models (staging + intermediate + marts)
 make dbt-test           # Run all dbt tests
 make dbt-build          # Full dbt workflow: deps + run + test
 make dashboard-validate # Validate dashboard data by running tile queries against BigQuery
-make run                # Run full pipeline (sequential, no Kestra required)
-make pipeline           # Run pipeline via Kestra API (requires Kestra running)
-make pipeline-local     # Run full pipeline locally (sequential, no Kestra required)
+make pipeline           # Run pipeline via Kestra API (recommended — requires Kestra running)
 make kestra-deploy      # Deploy flow YAML to Kestra via API
+make run                # Run full pipeline locally (sequential, no Kestra required)
+make pipeline-local     # Alias for make run
 make test               # Run all Python tests (uv run python -m pytest tests/ -v)
 make clean              # Tear down everything (containers + GCP resources)
 ```
