@@ -161,3 +161,4 @@ tasks:
     description: Run dbt transformations (staging, intermediate, marts) and tests
     commands:
       - cd dbt_dvf && uv run dbt deps && uv run dbt run && uv run dbt test
+      - chown -R $(stat -c '%u:%g' /app/project) /app/project/dbt_dvf/dbt_packages || true
