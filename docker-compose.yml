@@ -105,8 +105,6 @@ services:
             type: local
             local:
               base-path: /app/storage
-          variables:
-            env-vars-prefix: ""
       # Pipeline environment variables (read by flow tasks via {{ envs.* }})
       GCP_PROJECT_ID: ${GCP_PROJECT_ID}
       GCP_REGION: ${GCP_REGION:-europe-west9}

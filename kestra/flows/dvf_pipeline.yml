@@ -37,32 +37,20 @@ inputs:
       "full" processes all of France (~2 hours).
 
 # ---------------------------------------------------------------------------
-# Task defaults: environment variables injected into every shell task.
-# These are read from Kestra's server-level environment variables (envs.*),
-# which mirror the values in .env via docker-compose.yml.
-# All tasks run from /app/project (the mounted project directory).
+# Task defaults: all shell tasks use the Process runner (execute directly
+# inside the Kestra container, not in separate Docker containers). Env vars
+# from docker-compose.yml are inherited automatically. Only DVF_MODE needs
+# explicit injection since it depends on the flow input.
 # ---------------------------------------------------------------------------
 taskDefaults:
   - type: io.kestra.plugin.scripts.shell.Commands
     values:
+      taskRunner:
+        type: io.kestra.plugin.core.runner.Process
       beforeCommands:
         - cd /app/project
       env:
         DVF_MODE: "{{ inputs.mode }}"
-        GCP_PROJECT_ID: "{{ envs.GCP_PROJECT_ID }}"
-        GCP_REGION: "{{ envs.GCP_REGION }}"
-        GCS_BUCKET_NAME: "{{ envs.GCS_BUCKET_NAME }}"
-        GOOGLE_APPLICATION_CREDENTIALS: "{{ envs.GOOGLE_APPLICATION_CREDENTIALS }}"
-        BQ_DATASET_RAW: "{{ envs.BQ_DATASET_RAW }}"
-        BQ_DATASET_STAGING: "{{ envs.BQ_DATASET_STAGING }}"
-        BQ_DATASET_ANALYTICS: "{{ envs.BQ_DATASET_ANALYTICS }}"
-        POSTGRES_USER: "{{ envs.POSTGRES_USER }}"
-        POSTGRES_PASSWORD: "{{ envs.POSTGRES_PASSWORD }}"
-        POSTGRES_DB: "{{ envs.POSTGRES_DB }}"
-        POSTGRES_HOST: "{{ envs.POSTGRES_HOST }}"
-        POSTGRES_PORT: "{{ envs.POSTGRES_PORT }}"
-        DVF_DEMO_DEPARTMENTS: "{{ envs.DVF_DEMO_DEPARTMENTS }}"
-        DBT_PROFILES_DIR: "{{ envs.DBT_PROFILES_DIR }}"
 
 # =============================================================================
 # Pipeline Tasks (sequential unless wrapped in Parallel)
