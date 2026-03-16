@@ -259,7 +259,7 @@ Download the DVF+ SQL dump from Cerema Box (manual step — no account needed):
 |--------|------|------|----------------------|----------|
 | **La Reunion (recommended)** | [Download .7z](https://cerema.app.box.com/v/dvfplus-opendata/folder/347155412504) | 38 MB | `974` (default) | ~5 min |
 | Ile-de-France | [Browse](https://cerema.app.box.com/v/dvfplus-opendata) | 700 MB | `75` (Paris only) | ~15 min |
-| National (11 files) | [Browse](https://cerema.app.box.com/v/dvfplus-opendata) | 4-5 GB | use `DVF_MODE=full` | ~1-2h |
+| National (11-part .7z) | [Browse](https://cerema.app.box.com/v/dvfplus-opendata) | ~8 GB (ZIP) | `DVF_MODE=full` | ~1-2h |
 
 > **Recommended for review**: La Reunion (~38 MB). The `.env` is pre-configured for it — no changes needed.
 
@@ -285,6 +285,125 @@ DVF_MODE=full                    # All of France (requires National download)
 ```
 
 </details>
+
+### Full-France Mode
+
+#### Overview
+
+The national DVF+ dump covers all 101 French departments (~20M transactions, 2014-2025). Cerema distributes it as a multi-part `.7z` archive wrapped in a ZIP. You need to manually extract the ZIP; the pipeline handles everything else.
+
+**Disk space required:** ~30 GB free (8 GB ZIP + 9 GB .7z + 5 GB SQL files + CSV exports).
+
+```
+What you download          What you put in data/          What the pipeline does
+─────────────────          ─────────────────────          ──────────────────────
+National-selected.zip      *.7z.001 to .7z.011    ──→    Extract multi-part .7z
+  (~8 GB from browser)       (you extract the ZIP)        Extract inner .7z (~9 GB)
+                                                          Flatten 1_DONNEES_LIVRAISON/
+                                                          → 101 dept .sql files in data/
+                                                          Restore → Export → GCS → BQ → dbt
+```
+
+#### Step 1 — Download from Cerema Box
+
+1. Go to [cerema.app.box.com/v/dvfplus-opendata](https://cerema.app.box.com/v/dvfplus-opendata)
+2. Open the **National** folder
+3. Select all 11 files and click **Download** (or download the folder)
+4. Your browser saves `National-selected.zip` (~8 GB) — this may take 10-30 minutes
+
+#### Step 2 — Extract the ZIP and place the `.7z` parts in `data/`
+
+The ZIP contains 11 parts of a split `.7z` archive:
+
+```
+National-selected.zip
+└── National-selected/
+    ├── DVF_PLUS_2025_2_SQL_R999_ED251_part.7z.001   ← first part
+    ├── DVF_PLUS_2025_2_SQL_R999_ED251_part.7z.002
+    ├── DVF_PLUS_2025_2_SQL_R999_ED251_part.7z.003
+    ├── ...
+    └── DVF_PLUS_2025_2_SQL_R999_ED251_part.7z.011   ← last part (11 files total)
+```
+
+Extract the ZIP and move only the `.7z.*` parts into the project's `data/` directory:
+
+```bash
+# 1. Extract the ZIP
+unzip ~/Downloads/National-selected.zip -d /tmp/dvf-national
+
+# 2. Move the 11 .7z parts into data/
+mkdir -p data
+mv /tmp/dvf-national/National-selected/*.7z.* data/
+
+# 3. Clean up
+rm -rf /tmp/dvf-national
+```
+
+**Verify** — you should see exactly 11 files:
+
+```bash
+ls data/*.7z.* | wc -l
+# 11
+```
+
+> **Do NOT extract the `.7z` parts yourself.** The pipeline uses `py7zr` to handle multi-part extraction, nested archives, and SQL file flattening automatically. Just place the raw `.7z.001` to `.7z.011` files in `data/`.
+
+#### Step 3 — Configure `.env` for full mode
+
+Edit `.env` and set:
+
+```bash
+DVF_MODE=full
+```
+
+Remove or comment out `DVF_DEMO_DEPARTMENTS` — it is ignored when `DVF_MODE=full`.
+
+#### Step 4 — Run the pipeline
+
+```bash
+# Option A — Kestra (recommended, with web UI monitoring at localhost:8080)
+make docker-up-kestra && make kestra-deploy && make pipeline
+
+# Option B — Local sequential
+make run
+```
+
+The pipeline handles everything from this point:
+
+| Step | What happens | Duration |
+|------|-------------|----------|
+| `ingest-download` | Detects `.7z.001`, extracts 11 parts → inner `.7z` → flattens SQL files from `1_DONNEES_LIVRAISON/` into `data/` | ~10 min |
+| `ingest-restore` | Restores all 101 department SQL files into ephemeral PostgreSQL | ~45 min |
+| `ingest-export` | Exports 11 tables to CSV (~5 GB) | ~15 min |
+| `ingest-geojson` | Downloads department + commune boundaries from Etalab | ~30 sec |
+| `ingest-upload` | Uploads CSV + GeoJSON to GCS | ~10 min |
+| `bq-load` | Loads from GCS into BigQuery raw tables (partitioned + clustered) | ~5 min |
+| `dbt-build` | Runs 12 dbt models + 62 data quality tests | ~3 min |
+| **Total** | | **~1.5 hours** |
+
+#### Chunked ingestion (for machines with < 8 GB RAM)
+
+If PostgreSQL runs out of memory during the full restore, use chunked mode instead. It processes departments in batches of 10, restarting PostgreSQL between chunks:
+
+```bash
+# 1. Extract archives only (no restore)
+make ingest-download
+
+# 2. Run chunked ingestion (crash-safe, resumable)
+make docker-up
+make ingest-chunked
+make ingest-geojson
+make docker-down
+
+# 3. Upload and transform
+make ingest-upload
+make bq-load
+make dbt-build
+```
+
+Configure batch size via `DVF_CHUNK_SIZE` in `.env` (default: 10, lower = less RAM).
+
+If the process crashes, re-run `make ingest-chunked` — it resumes from where it stopped (progress saved in `data/chunked_progress.json`).
 
 ### 5. Run the pipeline
 
