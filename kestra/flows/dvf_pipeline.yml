@@ -161,4 +161,13 @@ tasks:
     description: Run dbt transformations (staging, intermediate, marts) and tests
     commands:
       - cd dbt_dvf && uv run dbt deps && uv run dbt run && uv run dbt test
-      - chown -R $(stat -c '%u:%g' /app/project) /app/project/dbt_dvf/dbt_packages || true
+
+  # --- Step 9: Fix file permissions -----------------------------------------
+  # Kestra runs as root inside the container, so files created during the
+  # pipeline (dbt_packages, __pycache__) are owned by root. Reset ownership
+  # to the host user so that `make run` (local mode) can work afterwards.
+  - id: fix_permissions
+    type: io.kestra.plugin.scripts.shell.Commands
+    description: Reset file ownership to host user (root -> host UID)
+    commands:
+      - chown -R $(stat -c '%u:%g' /app/project/Makefile) /app/project/dbt_dvf/dbt_packages /app/project/ingestion/__pycache__ || true
