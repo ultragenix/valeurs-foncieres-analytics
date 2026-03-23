@@ -31,6 +31,7 @@
       mutation_nature_label  -- STRING (e.g. 'Vente')
       is_vefa                -- BOOL, sale-before-completion flag
       department_code        -- STRING (cluster key 1)
+      department_name        -- STRING, official department name
       commune_code           -- STRING, INSEE code
       property_type_code     -- STRING (cluster key 2)
       property_type_label    -- STRING
@@ -70,40 +71,49 @@ WITH enriched AS (
 
 ),
 
+departments AS (
+
+    SELECT
+        department_code,
+        department_name
+    FROM {{ ref('stg_geo__departments') }}
+
+),
+
 final AS (
 
     SELECT
-        mutation_opendata_id AS transaction_id,
-        mutation_id,
-        transaction_date,
-        transaction_year,
-        transaction_month,
-        mutation_nature_id,
-        mutation_nature_label,
-        is_vefa,
-        department_code,
-        commune_code,
-        property_type_code,
-        property_type_label,
-        transaction_price_eur,
-        total_built_area_sqm AS built_area_sqm,
-        land_area_sqm,
-        -- Derived metric: price per square meter of built area.
-        -- SAFE_DIVIDE returns NULL when the denominator is 0 or NULL,
-        -- and NULLIF guards against division by zero for edge cases.
+        e.mutation_opendata_id AS transaction_id,
+        e.mutation_id,
+        e.transaction_date,
+        e.transaction_year,
+        e.transaction_month,
+        e.mutation_nature_id,
+        e.mutation_nature_label,
+        e.is_vefa,
+        e.department_code,
+        d.department_name,
+        e.commune_code,
+        e.property_type_code,
+        e.property_type_label,
+        e.transaction_price_eur,
+        e.total_built_area_sqm AS built_area_sqm,
+        e.land_area_sqm,
         SAFE_DIVIDE(
-            transaction_price_eur,
-            NULLIF(total_built_area_sqm, 0)
+            e.transaction_price_eur,
+            NULLIF(e.total_built_area_sqm, 0)
         ) AS price_per_sqm,
-        premises_count,
-        house_count,
-        apartment_count,
-        commercial_count,
-        outbuilding_count,
-        room_count,
-        latitude,
-        longitude
-    FROM enriched
+        e.premises_count,
+        e.house_count,
+        e.apartment_count,
+        e.commercial_count,
+        e.outbuilding_count,
+        e.room_count,
+        e.latitude,
+        e.longitude
+    FROM enriched AS e
+    LEFT JOIN departments AS d
+        ON e.department_code = d.department_code
 
 )
 
