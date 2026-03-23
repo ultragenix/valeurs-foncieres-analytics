@@ -33,11 +33,31 @@
     schema='dvf_analytics'
 ) }}
 
-WITH parcelle_communes AS (
+WITH all_commune_codes AS (
+
+    -- Collect commune codes from both parcelle data AND mutation fallback
+    -- to ensure full coverage (some mutations have no parcelle records)
+    SELECT
+        commune_code,
+        department_code
+    FROM {{ ref('stg_dvf__parcelles') }}
+    WHERE commune_code IS NOT NULL
+
+    UNION ALL
+
+    SELECT DISTINCT
+        insee_code AS commune_code,
+        department_code
+    FROM {{ ref('stg_dvf__mutations') }}
+    WHERE insee_code IS NOT NULL
+
+),
+
+parcelle_communes AS (
 
     -- Deduplicate: for each commune_code, find the department_code that
-    -- appears most often in the parcelle data (handles edge cases where
-    -- a commune is tagged with different departments)
+    -- appears most often (handles edge cases where a commune is tagged
+    -- with different departments across sources)
     SELECT
         commune_code,
         ARRAY_AGG(department_code ORDER BY dept_count DESC LIMIT 1)[OFFSET(0)] AS department_code
@@ -46,8 +66,7 @@ WITH parcelle_communes AS (
             commune_code,
             department_code,
             COUNT(*) AS dept_count
-        FROM {{ ref('stg_dvf__parcelles') }}
-        WHERE commune_code IS NOT NULL
+        FROM all_commune_codes
         GROUP BY commune_code, department_code
     )
     GROUP BY commune_code

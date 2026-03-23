@@ -55,7 +55,9 @@ cleaned AS (
         CAST(idmutation AS INT64) AS mutation_id,
         CAST(idpar AS STRING) AS parcel_identifier,
         CAST(coddep AS STRING) AS department_code,
-        CAST(codcomm AS STRING) AS commune_code,
+        -- codcomm is the 3-char commune suffix; concat with department code
+        -- to reconstruct the full 5-char INSEE commune code
+        CONCAT(CAST(coddep AS STRING), CAST(codcomm AS STRING)) AS commune_code,
         CAST(prefsect AS STRING) AS section_prefix,
         CAST(nosect AS STRING) AS section_number,
         CAST(noplan AS STRING) AS plan_number,

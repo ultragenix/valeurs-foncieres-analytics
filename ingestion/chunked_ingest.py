@@ -536,10 +536,14 @@ def _process_all_chunks(
         return
 
     total_completed = len(progress.get("completed_departments", []))
+    # Offset chunk index by already-completed chunks so that resumed
+    # uploads do not overwrite earlier chunk files in GCS.
+    chunk_offset = total_completed // DVF_CHUNK_SIZE
     for idx, chunk_files in enumerate(chunks):
+        absolute_idx = chunk_offset + idx
         is_first = total_completed == 0 and idx == 0
         _process_single_chunk(
-            annexe_file, chunk_files, is_first, idx, len(chunks), progress
+            annexe_file, chunk_files, is_first, absolute_idx, len(chunks), progress
         )
 
 
